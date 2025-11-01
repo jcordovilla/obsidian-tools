@@ -1,0 +1,8 @@
+# Dependencies
+# Note: Requires Python 3.10-3.13 (NOT 3.14+)
+openai-whisper>=20231117  # For transcribe_audio.py (local Whisper model)
+pillow>=10.0.0  # For compress_images.py (image compression)
+pymupdf>=1.23.0  # For compress_pdfs.py (PDF compression)
+
+# Python 3.10-3.13 is required
+# Install with: brew install python@3.13 && python3.13 -m venv venv
