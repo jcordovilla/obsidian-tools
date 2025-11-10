@@ -54,6 +54,39 @@ python compress_pdfs.py --vault /path/to/vault              # Dry run
 python compress_pdfs.py --vault /path/to/vault --no-dry-run # Compress
 ```
 
+### `attachment_stats.py`
+Print detailed statistics about Obsidian attachments, including filename pattern analysis.
+
+```bash
+# Basic statistics
+python attachment_stats.py --vault /path/to/vault
+
+# Include filename pattern analysis (discovers screenshot patterns)
+python attachment_stats.py --vault /path/to/vault --analyze-patterns
+```
+
+### `triage_boilerplate_attachments.py`
+Identify notes with many boilerplate attachments (from web clippers) and tag them for review. After manual review, clean up by removing attachments and references.
+
+**Automatically analyzes your vault to discover screenshot patterns** before scanning, improving detection accuracy.
+
+```bash
+# Scan and tag notes with boilerplate attachments (dry run, with pattern analysis)
+python triage_boilerplate_attachments.py --vault /path/to/vault scan
+
+# Scan and tag notes (actually tag them)
+python triage_boilerplate_attachments.py --vault /path/to/vault scan --no-dry-run
+
+# Clean triaged notes (remove boilerplate attachments and references)
+python triage_boilerplate_attachments.py --vault /path/to/vault clean --no-dry-run
+
+# Use custom minimum attachment threshold
+python triage_boilerplate_attachments.py --vault /path/to/vault scan --min-attachments 10
+
+# Skip pattern analysis (use default patterns only)
+python triage_boilerplate_attachments.py --vault /path/to/vault scan --skip-pattern-analysis
+```
+
 ## Safety
 
 - All scripts use dry-run mode by default

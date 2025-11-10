@@ -7,8 +7,9 @@ file sizes, including breakdown by file type.
 """
 
 import argparse
+import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Set, Tuple
 from collections import defaultdict
 
 
@@ -80,7 +81,7 @@ class AttachmentStats:
         
         for idx, attachment in enumerate(attachments, 1):
             if idx % 100 == 0:
-                print(f"  Processed {idx}/{self.total_files} files...")
+                print(f"  Processed {idx}/{self.total_files} files...", flush=True)
             
             try:
                 file_size = attachment.stat().st_size
@@ -278,7 +279,264 @@ class AttachmentStats:
         
         print("=" * 70)
     
-    def run(self):
+    def analyze_filename_patterns(self) -> Dict[str, any]:
+        """
+        Analyze filename patterns across all attachments to identify screenshot patterns
+        and other meaningful naming conventions.
+        
+        Returns a dictionary with discovered patterns and insights.
+        """
+        print("\n" + "=" * 70)
+        print("🔍 FILENAME PATTERN ANALYSIS")
+        print("=" * 70)
+        
+        if not self.all_files:
+            print("  No files to analyze. Run analyze_attachments() first.")
+            return {}
+        
+        attachments = self.get_all_attachments()
+        if not attachments:
+            print("  No attachments found!")
+            return {}
+        
+        # Collect all filenames
+        all_filenames = [f.name for f in attachments]
+        total_files = len(all_filenames)
+        
+        print(f"\nAnalyzing {total_files:,} attachment filename(s)...")
+        
+        # Patterns to analyze
+        patterns = {
+            'has_date_time': [],
+            'has_date_only': [],
+            'has_uuid': [],
+            'has_hash': [],
+            'has_sequential': [],
+            'has_common_words': [],
+            'short_names': [],
+            'long_names': [],
+            'no_extension': [],
+            'unknown_patterns': []
+        }
+        
+        # Common screenshot-related words
+        screenshot_words = {'screenshot', 'screen', 'shot', 'img', 'image', 'photo', 'pic', 'snap', 'capture'}
+        
+        # Date/time pattern detection
+        date_patterns = [
+            r'\d{4}-\d{2}-\d{2}',  # YYYY-MM-DD
+            r'\d{2}-\d{2}-\d{4}',  # MM-DD-YYYY
+            r'\d{8}',  # YYYYMMDD
+        ]
+        
+        time_patterns = [
+            r'\d{1,2}\.\d{2}\.\d{2}',  # H.MM.SS or HH.MM.SS
+            r'\d{6}',  # HHMMSS
+            r'\d{2}:\d{2}:\d{2}',  # HH:MM:SS
+        ]
+        
+        # UUID pattern (8-4-4-4-12 hexadecimal)
+        uuid_pattern = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+        
+        # Hash-like pattern (long alphanumeric strings)
+        hash_pattern = r'^[0-9a-f]{16,}$'
+        
+        # Sequential pattern (contains numbers in parentheses or underscores)
+        sequential_pattern = r'\(?\d+\)?'
+        
+        for filename in all_filenames:
+            name_lower = filename.lower()
+            name_without_ext = Path(filename).stem
+            
+            # Check for date patterns
+            has_date = any(re.search(pattern, filename) for pattern in date_patterns)
+            has_time = any(re.search(pattern, filename) for pattern in time_patterns)
+            
+            if has_date and has_time:
+                patterns['has_date_time'].append(filename)
+            elif has_date:
+                patterns['has_date_only'].append(filename)
+            
+            # Check for UUID
+            if re.search(uuid_pattern, filename, re.IGNORECASE):
+                patterns['has_uuid'].append(filename)
+            
+            # Check for hash-like patterns
+            if re.match(hash_pattern, name_without_ext, re.IGNORECASE):
+                patterns['has_hash'].append(filename)
+            
+            # Check for sequential numbering
+            if re.search(sequential_pattern, filename):
+                patterns['has_sequential'].append(filename)
+            
+            # Check for common screenshot words
+            has_screenshot_word = any(word in name_lower for word in screenshot_words)
+            if has_screenshot_word:
+                patterns['has_common_words'].append(filename)
+            
+            # Short names (likely boilerplate)
+            if len(name_without_ext) < 5:
+                patterns['short_names'].append(filename)
+            
+            # Long names (likely meaningful)
+            if len(name_without_ext) > 30:
+                patterns['long_names'].append(filename)
+            
+            # No extension
+            if not Path(filename).suffix:
+                patterns['no_extension'].append(filename)
+        
+        # Analyze common prefixes and suffixes
+        prefix_counts = defaultdict(int)
+        suffix_counts = defaultdict(int)
+        word_counts = defaultdict(int)
+        
+        for filename in all_filenames:
+            name_without_ext = Path(filename).stem
+            
+            # Extract prefix (first 3-10 chars)
+            if len(name_without_ext) >= 3:
+                for prefix_len in [3, 5, 7, 10]:
+                    if len(name_without_ext) >= prefix_len:
+                        prefix = name_without_ext[:prefix_len].lower()
+                        prefix_counts[prefix] += 1
+            
+            # Extract suffix (last 3-10 chars)
+            if len(name_without_ext) >= 3:
+                for suffix_len in [3, 5, 7, 10]:
+                    if len(name_without_ext) >= suffix_len:
+                        suffix = name_without_ext[-suffix_len:].lower()
+                        suffix_counts[suffix] += 1
+            
+            # Extract words
+            words = re.findall(r'[A-Za-z]{3,}', name_without_ext)
+            for word in words:
+                word_counts[word.lower()] += 1
+        
+        # Find most common prefixes (likely screenshot patterns)
+        top_prefixes = sorted(prefix_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+        top_suffixes = sorted(suffix_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+        top_words = sorted(word_counts.items(), key=lambda x: x[1], reverse=True)[:30]
+        
+        # Identify likely screenshot patterns
+        likely_screenshot_patterns = []
+        
+        # Patterns that contain date/time + screenshot words
+        for filename in patterns['has_date_time']:
+            name_lower = filename.lower()
+            if any(word in name_lower for word in screenshot_words):
+                likely_screenshot_patterns.append(filename)
+        
+        # Patterns with screenshot words + sequential numbers
+        for filename in patterns['has_common_words']:
+            if any(char.isdigit() for char in filename):
+                likely_screenshot_patterns.append(filename)
+        
+        # Print analysis results
+        print(f"\n📊 PATTERN SUMMARY:")
+        print(f"  Files with date+time: {len(patterns['has_date_time']):,} ({len(patterns['has_date_time'])/total_files*100:.1f}%)")
+        print(f"  Files with date only: {len(patterns['has_date_only']):,} ({len(patterns['has_date_only'])/total_files*100:.1f}%)")
+        print(f"  Files with UUID: {len(patterns['has_uuid']):,} ({len(patterns['has_uuid'])/total_files*100:.1f}%)")
+        print(f"  Files with hash-like names: {len(patterns['has_hash']):,} ({len(patterns['has_hash'])/total_files*100:.1f}%)")
+        print(f"  Files with sequential numbers: {len(patterns['has_sequential']):,} ({len(patterns['has_sequential'])/total_files*100:.1f}%)")
+        print(f"  Files with screenshot-related words: {len(patterns['has_common_words']):,} ({len(patterns['has_common_words'])/total_files*100:.1f}%)")
+        print(f"  Short names (<5 chars): {len(patterns['short_names']):,} ({len(patterns['short_names'])/total_files*100:.1f}%)")
+        print(f"  Long names (>30 chars): {len(patterns['long_names']):,} ({len(patterns['long_names'])/total_files*100:.1f}%)")
+        
+        print(f"\n🔝 TOP 10 COMMON PREFIXES:")
+        for prefix, count in top_prefixes[:10]:
+            percentage = (count / total_files * 100) if total_files > 0 else 0
+            print(f"  '{prefix}': {count:,} files ({percentage:.1f}%)")
+        
+        print(f"\n🔝 TOP 10 COMMON SUFFIXES:")
+        for suffix, count in top_suffixes[:10]:
+            percentage = (count / total_files * 100) if total_files > 0 else 0
+            print(f"  '{suffix}': {count:,} files ({percentage:.1f}%)")
+        
+        print(f"\n🔝 TOP 15 COMMON WORDS:")
+        for word, count in top_words[:15]:
+            percentage = (count / total_files * 100) if total_files > 0 else 0
+            print(f"  '{word}': {count:,} files ({percentage:.1f}%)")
+        
+        # Identify discovered screenshot patterns
+        print(f"\n📸 LIKELY SCREENSHOT PATTERNS DISCOVERED:")
+        if likely_screenshot_patterns:
+            # Group by pattern type
+            screenshot_pattern_types = defaultdict(list)
+            for filename in likely_screenshot_patterns[:50]:  # Sample up to 50
+                name_without_ext = Path(filename).stem
+                
+                # Categorize pattern
+                if re.search(r'\d{4}-\d{2}-\d{2}.*\d+\.\d+\.\d+', filename):
+                    screenshot_pattern_types['date_time_formatted'].append(filename)
+                elif re.search(r'screenshot.*\d', filename, re.IGNORECASE):
+                    screenshot_pattern_types['screenshot_numbered'].append(filename)
+                elif re.search(r'img.*\d', filename, re.IGNORECASE):
+                    screenshot_pattern_types['img_numbered'].append(filename)
+                else:
+                    screenshot_pattern_types['other'].append(filename)
+            
+            for pattern_type, examples in screenshot_pattern_types.items():
+                if examples:
+                    print(f"\n  {pattern_type.upper()}:")
+                    for example in examples[:5]:
+                        print(f"    • {example}")
+                    if len(examples) > 5:
+                        print(f"    ... and {len(examples) - 5} more")
+        else:
+            print("  No obvious screenshot patterns detected from analysis")
+        
+        # Generate regex patterns from discovered patterns
+        discovered_patterns = []
+        
+        # Pattern 1: Date-time with screenshot word
+        if patterns['has_date_time'] and patterns['has_common_words']:
+            # Look for common format
+            date_time_examples = [f for f in patterns['has_date_time'] if any(w in f.lower() for w in screenshot_words)][:10]
+            if date_time_examples:
+                discovered_patterns.append({
+                    'type': 'screenshot_date_time',
+                    'description': 'Files with date-time stamps and screenshot-related words',
+                    'examples': date_time_examples[:5]
+                })
+        
+        # Pattern 2: Screenshot + sequential numbers
+        sequential_screenshot = [f for f in patterns['has_sequential'] if any(w in f.lower() for w in screenshot_words)]
+        if sequential_screenshot:
+            discovered_patterns.append({
+                'type': 'screenshot_sequential',
+                'description': 'Files with screenshot words and sequential numbers',
+                'examples': sequential_screenshot[:5]
+            })
+        
+        # Pattern 3: IMG + numbers pattern
+        img_patterns = [f for f in all_filenames if re.match(r'^IMG[_\-]\d+', f, re.IGNORECASE)]
+        if img_patterns:
+            discovered_patterns.append({
+                'type': 'img_sequential',
+                'description': 'Files starting with IMG followed by numbers',
+                'examples': img_patterns[:5]
+            })
+        
+        print(f"\n💡 DISCOVERED SCREENSHOT PATTERNS:")
+        for idx, pattern_info in enumerate(discovered_patterns, 1):
+            print(f"\n  Pattern {idx}: {pattern_info['description']}")
+            print(f"    Examples:")
+            for example in pattern_info['examples']:
+                print(f"      • {example}")
+        
+        # Return analysis results
+        return {
+            'patterns': patterns,
+            'top_prefixes': top_prefixes,
+            'top_suffixes': top_suffixes,
+            'top_words': top_words,
+            'likely_screenshot_patterns': likely_screenshot_patterns,
+            'discovered_patterns': discovered_patterns,
+            'total_files': total_files
+        }
+    
+    def run(self, analyze_patterns: bool = False):
         """Main execution logic."""
         print("📊 Obsidian Attachment Statistics Tool")
         print(f"Vault: {self.vault_path}")
@@ -294,6 +552,10 @@ class AttachmentStats:
         
         # Print statistics
         self.print_statistics()
+        
+        # Analyze filename patterns if requested
+        if analyze_patterns:
+            self.analyze_filename_patterns()
 
 
 def main():
@@ -317,6 +579,12 @@ Examples:
         help='Path to Obsidian vault (default: /Users/jose/obsidian/JC)'
     )
     
+    parser.add_argument(
+        '--analyze-patterns',
+        action='store_true',
+        help='Analyze filename patterns to identify screenshot patterns'
+    )
+    
     args = parser.parse_args()
     
     # Validate vault path
@@ -331,7 +599,7 @@ Examples:
     
     # Run statistics
     stats = AttachmentStats(vault_path)
-    stats.run()
+    stats.run(analyze_patterns=args.analyze_patterns)
     
     return 0
 
