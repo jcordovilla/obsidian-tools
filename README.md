@@ -87,6 +87,40 @@ python triage_boilerplate_attachments.py --vault /path/to/vault scan --min-attac
 python triage_boilerplate_attachments.py --vault /path/to/vault scan --skip-pattern-analysis
 ```
 
+### `chatgpt_enrichment.py`
+**NEW** - LLM-powered ChatGPT conversation analysis, cleanup, and enrichment.
+
+Uses local Ollama models to:
+- Perform intelligent quality analysis
+- Add semantic topic tags
+- Extract frameworks and methodologies
+- Mine valuable questions for content ideas
+
+```bash
+# Analyze conversations with LLM (dry run, test on 10 files)
+python chatgpt_enrichment.py --vault /path/to/vault analyze --limit 10
+
+# Use different models
+python chatgpt_enrichment.py --vault /path/to/vault analyze --model fast     # llama3.2:3b (fastest)
+python chatgpt_enrichment.py --vault /path/to/vault analyze --model balanced # gemma3:4b (default)
+python chatgpt_enrichment.py --vault /path/to/vault analyze --model deep     # deepseek-r1:8b (best quality)
+
+# Archive low-value conversations based on LLM analysis
+python chatgpt_enrichment.py --vault /path/to/vault cleanup                  # Dry run
+python chatgpt_enrichment.py --vault /path/to/vault cleanup --no-dry-run     # Actually archive
+
+# Add semantic topic tags (coming soon)
+python chatgpt_enrichment.py --vault /path/to/vault tag
+
+# Extract frameworks/methodologies (coming soon)
+python chatgpt_enrichment.py --vault /path/to/vault extract
+
+# Mine questions for content ideas (coming soon)
+python chatgpt_enrichment.py --vault /path/to/vault mine-questions
+```
+
+**Prerequisites**: Requires [Ollama](https://ollama.ai) installed and running with at least one model pulled.
+
 ## Safety
 
 - All scripts use dry-run mode by default

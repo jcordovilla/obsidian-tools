@@ -1,0 +1,4 @@
+([('Merge Markdown Files',
+   '/Users/jose/Documents/python-tools/merge-md-notes/dist/Merge Markdown '
+   'Files',
+   'EXECUTABLE')],)
