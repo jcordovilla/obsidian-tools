@@ -11,7 +11,7 @@ import os
 import random
 import shutil
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from io import BytesIO
 
 try:
@@ -28,31 +28,156 @@ except ImportError:
     print("   Install with: pip install pillow")
     raise
 
+try:
+    import numpy as np
+except ImportError:
+    print("⚠️  Error: NumPy library not installed.")
+    print("   Install with: pip install numpy")
+    raise
+
+
+def calculate_ssim(img1: Image.Image, img2: Image.Image, window_size: int = 11) -> float:
+    """
+    Calculate Structural Similarity Index (SSIM) between two images.
+    Returns a value between 0 and 1, where 1 means identical images.
+
+    Uses a simplified SSIM implementation that doesn't require scikit-image.
+    """
+    # Convert to grayscale numpy arrays
+    if img1.mode != 'L':
+        img1 = img1.convert('L')
+    if img2.mode != 'L':
+        img2 = img2.convert('L')
+
+    # Resize to same dimensions if needed
+    if img1.size != img2.size:
+        img2 = img2.resize(img1.size, Image.Resampling.LANCZOS)
+
+    arr1 = np.array(img1, dtype=np.float64)
+    arr2 = np.array(img2, dtype=np.float64)
+
+    # Constants for stability
+    C1 = (0.01 * 255) ** 2
+    C2 = (0.03 * 255) ** 2
+
+    # Calculate means
+    mu1 = arr1.mean()
+    mu2 = arr2.mean()
+
+    # Calculate variances and covariance
+    sigma1_sq = arr1.var()
+    sigma2_sq = arr2.var()
+    sigma12 = ((arr1 - mu1) * (arr2 - mu2)).mean()
+
+    # SSIM formula
+    numerator = (2 * mu1 * mu2 + C1) * (2 * sigma12 + C2)
+    denominator = (mu1 ** 2 + mu2 ** 2 + C1) * (sigma1_sq + sigma2_sq + C2)
+
+    ssim = numerator / denominator
+    return float(ssim)
+
 
 class PDFCompressor:
     """Main class for finding and compressing large PDF files in Obsidian attachments."""
-    
-    def __init__(self, vault_path: str, size_threshold_kb: int = 500, dry_run: bool = True):
+
+    def __init__(self, vault_path: str, size_threshold_kb: int = 500, dry_run: bool = True,
+                 quality_threshold: float = 0.92, backup_path: Optional[Path] = None,
+                 interactive: bool = False):
         self.vault_path = Path(vault_path)
         self.attachments_path = self.vault_path / "Attachments"
         self.size_threshold_kb = size_threshold_kb
         self.size_threshold_bytes = size_threshold_kb * 1024
         self.dry_run = dry_run
-        
+        self.quality_threshold = quality_threshold  # SSIM threshold (0.92 = high quality)
+        self.interactive = interactive  # Ask for confirmation before applying
+
         # PDF file extension
         self.pdf_extensions = {'.pdf'}
-        
-        # Backup directory in vault root
-        self.backup_path = self.vault_path / "PDF_backups"
-        
+
+        # Backup directory - can be set externally (e.g., outside the vault)
+        self.backup_path = backup_path if backup_path else self.vault_path / "PDF_backups"
+
         # Statistics
         self.stats = {
             'pdfs_scanned': 0,
             'large_pdfs_found': 0,
             'pdfs_compressed': 0,
             'compression_failed': 0,
+            'quality_rejected': 0,
             'space_saved_mb': 0.0,
         }
+
+    def render_pdf_page(self, pdf_path: Path, page_num: int, dpi: int = 150) -> Optional[Image.Image]:
+        """Render a specific PDF page as a PIL Image."""
+        try:
+            doc = fitz.open(pdf_path)
+            if page_num >= len(doc):
+                doc.close()
+                return None
+            page = doc[page_num]
+            # Render at specified DPI
+            mat = fitz.Matrix(dpi / 72, dpi / 72)
+            pix = page.get_pixmap(matrix=mat)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            doc.close()
+            return img
+        except Exception as e:
+            print(f"    ⚠️  Warning: Could not render page {page_num}: {e}")
+            return None
+
+    def check_quality(self, original_path: Path, compressed_path: Path,
+                      sample_pages: int = 3) -> Tuple[bool, float]:
+        """
+        Compare quality between original and compressed PDF.
+        Returns (passed, average_ssim).
+
+        Samples up to `sample_pages` pages (first, middle, last) and calculates SSIM.
+        """
+        try:
+            orig_doc = fitz.open(original_path)
+            total_pages = len(orig_doc)
+            orig_doc.close()
+
+            if total_pages == 0:
+                return True, 1.0
+
+            # Select pages to sample: first, middle, last (or fewer if short doc)
+            if total_pages == 1:
+                pages_to_check = [0]
+            elif total_pages == 2:
+                pages_to_check = [0, 1]
+            else:
+                pages_to_check = [
+                    0,  # first
+                    total_pages // 2,  # middle
+                    total_pages - 1  # last
+                ]
+
+            ssim_scores = []
+
+            for page_num in pages_to_check:
+                orig_img = self.render_pdf_page(original_path, page_num)
+                comp_img = self.render_pdf_page(compressed_path, page_num)
+
+                if orig_img is None or comp_img is None:
+                    continue
+
+                ssim = calculate_ssim(orig_img, comp_img)
+                ssim_scores.append(ssim)
+
+            if not ssim_scores:
+                # Could not compare any pages, assume OK
+                return True, 1.0
+
+            avg_ssim = sum(ssim_scores) / len(ssim_scores)
+            passed = avg_ssim >= self.quality_threshold
+
+            return passed, avg_ssim
+
+        except Exception as e:
+            print(f"    ⚠️  Warning: Quality check failed: {e}")
+            # If quality check fails, be conservative and reject
+            return False, 0.0
     
     def get_all_pdfs(self) -> List[Path]:
         """Get all PDF files from the Attachments folder and subfolders."""
@@ -348,34 +473,78 @@ class PDFCompressor:
             compression_ratio = (1 - compressed_size / original_size) * 100
             
             print(f"  📦 Compressed size: {self.format_size(compressed_size)} ({compression_ratio:.1f}% reduction)")
-            
+
             if compressed_size < original_size:
-                # Success! Replace original with compressed version
+                # Size is smaller, now check quality
+                print(f"  🔍 Checking quality (threshold: {self.quality_threshold:.2f})...")
+                quality_passed, avg_ssim = self.check_quality(pdf_path, temp_path)
+                print(f"  📊 Quality score (SSIM): {avg_ssim:.4f}")
+
+                if not quality_passed:
+                    # Quality degraded too much, reject compression
+                    temp_path.unlink()
+                    self.stats['quality_rejected'] += 1
+                    print(f"  ⚠️  Quality below threshold ({avg_ssim:.4f} < {self.quality_threshold:.2f}), keeping original")
+                    return False
+
+                # Quality passed!
+                space_saved = original_size - compressed_size
+
+                # Interactive mode: ask for confirmation before applying
+                if self.interactive:
+                    print()
+                    print("  " + "-" * 50)
+                    print(f"  📋 SUMMARY:")
+                    print(f"     Original:   {self.format_size(original_size)}")
+                    print(f"     Compressed: {self.format_size(compressed_size)} ({compression_ratio:.1f}% smaller)")
+                    print(f"     Quality:    {avg_ssim:.4f} (threshold: {self.quality_threshold:.2f}) ✓")
+                    print(f"     Savings:    {self.format_size(space_saved)}")
+                    print("  " + "-" * 50)
+                    print()
+                    print("  Apply compression? (yes/no): ", end='')
+                    response = input().strip().lower()
+
+                    if response not in ['yes', 'y']:
+                        temp_path.unlink()
+                        print("  ❌ Compression cancelled by user.")
+                        return False
+
+                # Apply compression (either non-interactive or user confirmed)
                 if not self.dry_run:
-                    # Create backup directory structure preserving relative path
-                    rel_path = pdf_path.relative_to(self.vault_path)
-                    backup_path = self.backup_path / rel_path
-                    backup_path = self._get_unique_backup_path(backup_path)
-                    backup_path.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    # Move original to backup
-                    shutil.move(str(pdf_path), str(backup_path))
-                    
-                    # Replace with compressed version (preserving exact filename)
-                    shutil.move(str(temp_path), str(pdf_path))
-                    
-                    # Calculate space saved
-                    space_saved = original_size - compressed_size
+                    # Create backup path - use filename only (flat structure)
+                    backup_file = self.backup_path / pdf_path.name
+                    backup_file = self._get_unique_backup_path(backup_file)
+                    self.backup_path.mkdir(parents=True, exist_ok=True)
+
+                    # Safe file swap with rollback on failure
+                    try:
+                        # Step 1: Move original to backup
+                        shutil.move(str(pdf_path), str(backup_file))
+
+                        try:
+                            # Step 2: Move compressed to original location
+                            shutil.move(str(temp_path), str(pdf_path))
+                        except Exception as e:
+                            # Rollback: restore original from backup
+                            print(f"  ⚠️  Failed to move compressed file, rolling back...")
+                            shutil.move(str(backup_file), str(pdf_path))
+                            raise e
+
+                    except Exception as e:
+                        # Clean up temp file if it still exists
+                        if temp_path.exists():
+                            temp_path.unlink()
+                        print(f"  ❌ File swap failed: {e}")
+                        return False
+
                     self.stats['space_saved_mb'] += space_saved / (1024 * 1024)
-                    
+
                     print(f"  ✅ Success: Saved {self.format_size(space_saved)}")
-                    backup_rel = backup_path.relative_to(self.vault_path)
-                    print(f"  🔒 Backup saved: {backup_rel}")
+                    print(f"  🔒 Backup saved: {backup_file}")
                     return True
                 else:
                     # In dry run, clean up the test compressed file
                     temp_path.unlink()
-                    space_saved = original_size - compressed_size
                     self.stats['space_saved_mb'] += space_saved / (1024 * 1024)
                     print(f"  ✅ Would save: {self.format_size(space_saved)}")
                     return True
@@ -389,6 +558,14 @@ class PDFCompressor:
             print(f"  ❌ Compression failed: {e}")
             import traceback
             traceback.print_exc()
+            # Clean up temp file if it exists
+            temp_path = pdf_path.parent / f"{pdf_path.stem}_compressed.pdf"
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                    print(f"  🧹 Cleaned up temp file")
+                except:
+                    pass
             return False
     
     def _get_unique_backup_path(self, path: Path) -> Path:
@@ -412,6 +589,8 @@ class PDFCompressor:
         print("📚 Obsidian PDF Compression Tool")
         print(f"Vault: {self.vault_path}")
         print(f"Size threshold: {self.size_threshold_kb} KB")
+        print(f"Quality threshold: {self.quality_threshold}")
+        print(f"Backup location: {self.backup_path}")
         print("=" * 60)
         
         # Get all PDFs
@@ -453,7 +632,11 @@ class PDFCompressor:
             print("\n⚠️  DRY RUN MODE: No files will be modified.")
         else:
             print("\nThe script will compress these PDFs while maintaining screen quality.")
-            print(f"Original files will be backed up to: {self.backup_path.relative_to(self.vault_path)}")
+            if self.backup_path.is_relative_to(self.vault_path):
+                backup_display = self.backup_path.relative_to(self.vault_path)
+            else:
+                backup_display = self.backup_path
+            print(f"Original files will be backed up to: {backup_display}")
             print("\nWould you like to proceed? (yes/no): ", end='')
             response = input().strip().lower()
             
@@ -492,6 +675,7 @@ class PDFCompressor:
         print(f"  • PDFs scanned: {self.stats['pdfs_scanned']}")
         print(f"  • Large PDFs found: {self.stats['large_pdfs_found']}")
         print(f"  • PDFs compressed: {self.stats['pdfs_compressed']}")
+        print(f"  • Quality rejected: {self.stats['quality_rejected']} (SSIM < {self.quality_threshold:.2f})")
         print(f"  • Compression failed: {self.stats['compression_failed']}")
         print(f"  • Space saved: {self.format_size(self.stats['space_saved_mb'] * 1024 * 1024)}")
         print("=" * 60)
@@ -519,7 +703,7 @@ Examples:
   python compress_pdfs.py
 
 Requirements:
-  pip install pymupdf pillow
+  pip install pymupdf pillow numpy
 
 The script will:
   1. Find all PDF files larger than the threshold (default: 500KB)
@@ -538,12 +722,19 @@ The script will:
         default='/Users/jose/obsidian/JC',
         help='Path to Obsidian vault (default: /Users/jose/obsidian/JC)'
     )
-    
+
+    parser.add_argument(
+        '--file',
+        type=str,
+        default=None,
+        help='Process a single PDF file instead of scanning the vault. Ignores --threshold.'
+    )
+
     parser.add_argument(
         '--threshold',
         type=int,
         default=500,
-        help='Size threshold in KB (default: 500 KB)'
+        help='Size threshold in KB (default: 500 KB). Ignored if --file is specified.'
     )
     
     parser.add_argument(
@@ -551,27 +742,94 @@ The script will:
         action='store_true',
         help='Allow actual compression (prompts for confirmation). Default is dry-run mode.'
     )
-    
+
+    parser.add_argument(
+        '--quality',
+        type=float,
+        default=0.92,
+        help='Quality threshold (SSIM score 0-1). Compression rejected if quality drops below this. Default: 0.92 (high quality). Use 0.95 for stricter, 0.85 for more aggressive compression.'
+    )
+
     args = parser.parse_args()
-    
-    # Validate vault path
+
+    # Single file mode
+    if args.file:
+        file_path = Path(args.file)
+        if not file_path.exists():
+            print(f"Error: File does not exist: {file_path}")
+            return 1
+        if not file_path.suffix.lower() == '.pdf':
+            print(f"Error: File is not a PDF: {file_path}")
+            return 1
+
+        # Use file's parent as vault for internal references
+        vault_path = file_path.parent
+
+        # Backup folder outside the vault (in obsidian-tools)
+        backup_path = Path(__file__).parent / "PDF_backups"
+
+        print("📚 Obsidian PDF Compression Tool (Single File Mode)")
+        print(f"File: {file_path}")
+        print(f"Quality threshold: {args.quality}")
+        print(f"Backup location: {backup_path}")
+        print("=" * 60)
+
+        # In single file mode: interactive=True (asks confirmation), dry_run=False (will apply if confirmed)
+        compressor = PDFCompressor(
+            vault_path,
+            size_threshold_kb=0,  # Ignored in single file mode
+            dry_run=False,  # Not a dry run - will apply if user confirms
+            quality_threshold=args.quality,
+            backup_path=backup_path,
+            interactive=True  # Ask for confirmation before applying
+        )
+
+        print()
+        result = compressor.compress_pdf(file_path)
+
+        # Final summary
+        print()
+        print("=" * 60)
+        print("📊 FINAL RESULT")
+        print("=" * 60)
+        if result:
+            print(f"  ✅ Compression applied successfully")
+            print(f"  • Space saved: {compressor.format_size(compressor.stats['space_saved_mb'] * 1024 * 1024)}")
+            print(f"  • Original backed up to: {compressor.backup_path}")
+        elif compressor.stats['quality_rejected'] > 0:
+            print(f"  ⚠️  Compression rejected (quality below {args.quality})")
+            print(f"  • Original file unchanged")
+        else:
+            print(f"  ℹ️  No compression applied")
+            print(f"  • Original file unchanged")
+        print("=" * 60)
+
+        return 0
+
+    # Vault mode (batch processing)
     vault_path = Path(args.vault)
     if not vault_path.exists():
         print(f"Error: Vault path does not exist: {vault_path}")
         return 1
-    
+
     if not vault_path.is_dir():
         print(f"Error: Vault path is not a directory: {vault_path}")
         return 1
-    
-    # Run compression
+
+    # Backup folder outside the vault (in obsidian-tools)
+    backup_path = Path(__file__).parent / "PDF_backups"
+
+    # Run compression with interactive confirmation for each file
     compressor = PDFCompressor(
-        vault_path, 
+        vault_path,
         size_threshold_kb=args.threshold,
-        dry_run=not args.no_dry_run
+        dry_run=not args.no_dry_run,
+        quality_threshold=args.quality,
+        backup_path=backup_path,
+        interactive=not args.no_dry_run  # Interactive when actually compressing
     )
     compressor.run()
-    
+
     return 0
 
 

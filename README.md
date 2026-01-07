@@ -47,79 +47,75 @@ python compress_images.py --vault /path/to/vault --no-dry-run # Compress
 ```
 
 ### `compress_pdfs.py`
-Compress PDFs >500KB in Attachments folder.
+Compress PDFs >500KB with SSIM quality verification. Backs up originals to `PDF_backups/`.
 
 ```bash
 python compress_pdfs.py --vault /path/to/vault              # Dry run
 python compress_pdfs.py --vault /path/to/vault --no-dry-run # Compress
+python compress_pdfs.py --file /path/to/file.pdf            # Single file mode
 ```
 
 ### `attachment_stats.py`
 Print detailed statistics about Obsidian attachments, including filename pattern analysis.
 
 ```bash
-# Basic statistics
 python attachment_stats.py --vault /path/to/vault
-
-# Include filename pattern analysis (discovers screenshot patterns)
 python attachment_stats.py --vault /path/to/vault --analyze-patterns
 ```
 
-### `triage_boilerplate_attachments.py`
-Identify notes with many boilerplate attachments (from web clippers) and tag them for review. After manual review, clean up by removing attachments and references.
-
-**Automatically analyzes your vault to discover screenshot patterns** before scanning, improving detection accuracy.
+### `delete_files_from_md.py`
+Extract file paths from markdown files (wiki-links, backticks, bare paths) and optionally delete them.
 
 ```bash
-# Scan and tag notes with boilerplate attachments (dry run, with pattern analysis)
-python triage_boilerplate_attachments.py --vault /path/to/vault scan
-
-# Scan and tag notes (actually tag them)
-python triage_boilerplate_attachments.py --vault /path/to/vault scan --no-dry-run
-
-# Clean triaged notes (remove boilerplate attachments and references)
-python triage_boilerplate_attachments.py --vault /path/to/vault clean --no-dry-run
-
-# Use custom minimum attachment threshold
-python triage_boilerplate_attachments.py --vault /path/to/vault scan --min-attachments 10
-
-# Skip pattern analysis (use default patterns only)
-python triage_boilerplate_attachments.py --vault /path/to/vault scan --skip-pattern-analysis
+python delete_files_from_md.py file.md                           # Extract paths (dry run)
+python delete_files_from_md.py file.md --wiki-only               # Only [[...]] targets
+python delete_files_from_md.py file.md --base-dir /path/to/base  # Resolve relative paths
+python delete_files_from_md.py file.md --match-basenames         # Search recursively by basename
+python delete_files_from_md.py file.md --no-dry-run              # Actually delete
 ```
 
 ### `chatgpt_enrichment.py`
-**NEW** - LLM-powered ChatGPT conversation analysis, cleanup, and enrichment.
-
-Uses local Ollama models to:
-- Perform intelligent quality analysis
-- Add semantic topic tags
-- Extract frameworks and methodologies
-- Mine valuable questions for content ideas
+LLM-powered ChatGPT conversation analysis and cleanup using OpenAI API.
 
 ```bash
-# Analyze conversations with LLM (dry run, test on 10 files)
+# Analyze conversations (dry run, test on 10 files)
 python chatgpt_enrichment.py --vault /path/to/vault analyze --limit 10
 
-# Use different models
-python chatgpt_enrichment.py --vault /path/to/vault analyze --model fast     # llama3.2:3b (fastest)
-python chatgpt_enrichment.py --vault /path/to/vault analyze --model balanced # gemma3:4b (default)
-python chatgpt_enrichment.py --vault /path/to/vault analyze --model deep     # deepseek-r1:8b (best quality)
+# Use Ollama instead of OpenAI
+python chatgpt_enrichment.py --vault /path/to/vault analyze --provider ollama
 
-# Archive low-value conversations based on LLM analysis
-python chatgpt_enrichment.py --vault /path/to/vault cleanup                  # Dry run
-python chatgpt_enrichment.py --vault /path/to/vault cleanup --no-dry-run     # Actually archive
-
-# Add semantic topic tags (coming soon)
-python chatgpt_enrichment.py --vault /path/to/vault tag
-
-# Extract frameworks/methodologies (coming soon)
-python chatgpt_enrichment.py --vault /path/to/vault extract
-
-# Mine questions for content ideas (coming soon)
-python chatgpt_enrichment.py --vault /path/to/vault mine-questions
+# Archive low-value conversations based on analysis
+python chatgpt_enrichment.py --vault /path/to/vault cleanup              # Dry run
+python chatgpt_enrichment.py --vault /path/to/vault cleanup --no-dry-run # Actually archive
 ```
 
-**Prerequisites**: Requires [Ollama](https://ollama.ai) installed and running with at least one model pulled.
+**Prerequisites**: Requires OpenAI API key in `.env` file (`OPENAI_API_KEY=sk-...`), or [Ollama](https://ollama.ai) for local models.
+
+## Subprojects
+
+### `merge-md-notes/`
+GUI tool (tkinter) for merging multiple markdown files with clear separators for LLM processing.
+
+```bash
+python merge-md-notes/merge_md_files.py
+```
+
+### `sample-md-notes/`
+CLI tool to randomly sample n notes from a vault into a single directory.
+
+```bash
+python sample-md-notes/obsidian_sampler.py 50 --vault /path/to/vault --sample /path/to/output
+```
+
+## Shared Utilities
+
+### `obsidian_utils.py`
+Common utilities shared across scripts:
+- `format_size()` - Human-readable file sizes
+- `get_all_notes()` / `get_all_attachments()` - File discovery
+- `move_to_trash()` - Safe deletion with dry-run support
+- `compute_file_hash()` - Content hashing for deduplication
+- `extract_wiki_links()` / `find_attachment_references()` - Obsidian link parsing
 
 ## Safety
 

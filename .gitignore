@@ -19,3 +19,10 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+# Backup folders (runtime data)
+PDF_backups/
+Attachments/backup/
+*.backup
+
+# Analysis reports (runtime data)
+*_analysis_report.json

@@ -10,13 +10,18 @@ Moves duplicates and orphans to trash.
 """
 
 import argparse
-import hashlib
-import re
-import shutil
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
-from datetime import datetime
+from typing import Dict, List, Set
 from collections import defaultdict
+
+from obsidian_utils import (
+    format_size,
+    get_all_notes,
+    get_all_attachments,
+    move_to_trash,
+    compute_file_hash,
+    find_attachment_references,
+)
 
 
 class AttachmentDeduplicator:
@@ -46,114 +51,9 @@ class AttachmentDeduplicator:
         if not self.dry_run:
             self.trash_path.mkdir(exist_ok=True)
     
-    def get_all_attachments(self) -> List[Path]:
-        """Get all files from the Attachments folder."""
-        if not self.attachments_path.exists():
-            return []
-        
-        attachments = []
-        for file in self.attachments_path.rglob("*"):
-            if file.is_file():
-                attachments.append(file)
-        
-        return attachments
-    
-    def get_all_notes(self) -> List[Path]:
-        """Get all markdown files in the vault."""
-        notes = []
-        for md_file in self.vault_path.rglob("*.md"):
-            # Skip hidden directories and trash
-            if any(part.startswith('.') for part in md_file.parts):
-                if '.trash' not in str(md_file) and '.obsidian' not in str(md_file):
-                    continue
-            notes.append(md_file)
-        return notes
-    
-    def compute_file_hash(self, file_path: Path) -> str:
-        """Compute MD5 hash of file content."""
-        try:
-            md5_hash = hashlib.md5()
-            with open(file_path, 'rb') as f:
-                # Read in chunks for large files
-                for chunk in iter(lambda: f.read(4096), b""):
-                    md5_hash.update(chunk)
-            return md5_hash.hexdigest()
-        except Exception as e:
-            print(f"Error computing hash for {file_path}: {e}")
-            return ""
-    
-    def find_attachment_references(self) -> Set[str]:
-        """
-        Find all attachments referenced in notes.
-        Returns set of attachment relative paths (from Attachments/ root).
-        """
-        notes = self.get_all_notes()
-        referenced = set()
-        
-        # Build a lookup map for fast filename searches
-        filename_to_paths = defaultdict(list)
-        for attachment_file in self.attachments_path.rglob("*"):
-            if attachment_file.is_file():
-                filename_to_paths[attachment_file.name].append(attachment_file)
-        
-        for note in notes:
-            try:
-                content = note.read_text(encoding='utf-8', errors='ignore')
-            except Exception as e:
-                print(f"Error reading note {note}: {e}")
-                continue
-            
-            # Look for markdown image/link syntax: ![[image.png]] or [[file.pdf]]
-            pattern = r'\[\[([^\]]+)\]\]'
-            matches = re.findall(pattern, content)
-            
-            # Check markdown image syntax: ![](Attachments/image.png)
-            md_image_pattern = r'!\[([^\]]*)\]\(([^)]+)\)'
-            md_matches = re.findall(md_image_pattern, content)
-            
-            # Process [[link]] style references
-            for match in matches:
-                # Remove Obsidian aliases (|alias)
-                match = match.split('|')[0]
-                
-                # If path contains attachments/ or Attachments/, extract the file part (case insensitive)
-                parts = re.split(r'(?i)attachments/', match)
-                if len(parts) > 1:
-                    # Get everything after attachments/
-                    file_part = parts[-1]
-                    # Normalize any relative paths - remove all ../ sequences
-                    file_part = re.sub(r'\.\./', '', file_part)
-                    
-                    # Check if this is an attachment
-                    attachment = self.attachments_path / file_part
-                    if attachment.exists() and attachment.is_file():
-                        # Store relative path from Attachments/ as normalized string
-                        rel_path = attachment.relative_to(self.attachments_path)
-                        referenced.add(str(rel_path).replace('\\', '/'))  # Normalize path separators
-                else:
-                    # Assume it's a direct reference to a file in Attachments/
-                    # Use fast lookup map to find matching files
-                    if match in filename_to_paths:
-                        for attachment_file in filename_to_paths[match]:
-                            # Store relative path from Attachments/ as normalized string
-                            rel_path = attachment_file.relative_to(self.attachments_path)
-                            referenced.add(str(rel_path).replace('\\', '/'))  # Normalize path separators
-            
-            # Process markdown image syntax
-            for alt, link in md_matches:
-                # Extract filename if link is to attachments/ or Attachments/ (case insensitive)
-                parts = re.split(r'(?i)attachments/', link)
-                if len(parts) > 1:
-                    rel_path_str = parts[-1].split('?')[0]  # Remove query params
-                    # Normalize path - remove all ../ sequences
-                    rel_path_str = re.sub(r'\.\./', '', rel_path_str)
-                    attachment = self.attachments_path / rel_path_str
-                    if attachment.exists() and attachment.is_file():
-                        # Get relative path and normalize
-                        rel_path = attachment.relative_to(self.attachments_path)
-                        referenced.add(str(rel_path).replace('\\', '/'))  # Normalize path separators
-        
-        return referenced
+    def find_attachment_refs(self) -> Set[str]:
+        """Find all attachments referenced in notes."""
+        return find_attachment_references(self.vault_path)
     
     def detect_duplicates(self, attachments: List[Path]) -> List[List[Path]]:
         """
@@ -162,13 +62,13 @@ class AttachmentDeduplicator:
         """
         # Group files by hash
         hash_groups = defaultdict(list)
-        
+
         print("📊 Computing file hashes...")
         for idx, attachment in enumerate(attachments):
             if idx % 50 == 0:
                 print(f"  Processed {idx}/{len(attachments)} files...")
-            
-            file_hash = self.compute_file_hash(attachment)
+
+            file_hash = compute_file_hash(attachment)
             if file_hash:
                 hash_groups[file_hash].append(attachment)
         
@@ -183,24 +83,17 @@ class AttachmentDeduplicator:
         
         return duplicate_groups
     
-    def format_size(self, bytes_size: int) -> str:
-        """Format file size in human-readable format."""
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if bytes_size < 1024.0:
-                return f"{bytes_size:.2f} {unit}"
-            bytes_size /= 1024.0
-        return f"{bytes_size:.2f} TB"
     
     def show_duplicate_group(self, group: List[Path], group_num: int):
         """Display information about a duplicate group."""
         print(f"\n📎 Duplicate Group {group_num}:")
-        
+
         original = group[0]
         duplicates = group[1:]
-        
+
         # Get file size
         file_size = original.stat().st_size
-        print(f"  File size: {self.format_size(file_size)}")
+        print(f"  File size: {format_size(file_size)}")
         
         # Show original
         rel_path = original.relative_to(self.attachments_path)
@@ -242,7 +135,7 @@ class AttachmentDeduplicator:
         if not orphaned_files:
             return
         
-        notes = self.get_all_notes()
+        notes = get_all_notes(self.vault_path)
         false_orphans = []
         
         # Sample a random subset for verification (100 files or 5%, whichever is larger)
@@ -306,7 +199,7 @@ class AttachmentDeduplicator:
         """Display information about an orphaned file."""
         rel_path = orphan.relative_to(self.attachments_path)
         file_size = orphan.stat().st_size
-        print(f"  {idx}. {rel_path} ({self.format_size(file_size)})")
+        print(f"  {idx}. {rel_path} ({format_size(file_size)})")
     
     def move_to_trash(self, path: Path) -> bool:
         """Move a file to the trash directory."""
@@ -367,17 +260,17 @@ class AttachmentDeduplicator:
         
         # PHASE 1: Get all attachments
         print("\n📚 PHASE 1: Scanning attachments...")
-        attachments = self.get_all_attachments()
+        attachments = get_all_attachments(self.vault_path)
         self.stats['attachments_scanned'] = len(attachments)
         print(f"Found {len(attachments)} attachment(s)")
-        
+
         if not attachments:
             print("\n✅ No attachments found!")
             return
-        
+
         # PHASE 2: Find referenced attachments
         print("\n🔗 PHASE 2: Finding attachment references in notes...")
-        referenced_attachments = self.find_attachment_references()
+        referenced_attachments = self.find_attachment_refs()
         print(f"Found {len(referenced_attachments)} referenced attachment(s)")
         
         # PHASE 3: Detect duplicates
