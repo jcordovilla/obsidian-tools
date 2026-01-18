@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code when working with this repository.
 
 ## Overview
 
-A collection of Python utilities for managing Obsidian vaults. All scripts operate on a vault path (default: `/Users/jose/obsidian/JC`) and use dry-run mode by default for safety.
+Python utilities for managing Obsidian vaults. All scripts operate on a vault path (default: `/Users/jose/obsidian/JC`) and use **dry-run mode by default** for safety.
 
 ## Development Setup
 
@@ -15,14 +15,7 @@ pip install -r requirements.txt
 brew install ffmpeg  # Required for transcribe_audio.py
 ```
 
-**Python Version**: Requires 3.10-3.13 (NOT 3.14+ due to Whisper compatibility)
-
-## Key Dependencies
-
-- `openai-whisper` - Audio transcription (transcribe_audio.py)
-- `pillow` - Image compression (compress_images.py)
-- `pymupdf` + `numpy` - PDF compression with SSIM quality checks (compress_pdfs.py)
-- `openai` + `python-dotenv` - LLM analysis (chatgpt_enrichment.py requires `.env` with `OPENAI_API_KEY`)
+**Python Version**: 3.10-3.13 (NOT 3.14+ due to Whisper compatibility)
 
 ## Running Scripts
 
@@ -32,53 +25,105 @@ python <script>.py --vault /path/to/vault              # Dry run (safe preview)
 python <script>.py --vault /path/to/vault --no-dry-run # Actually modify files
 ```
 
+## Script Categories
+
+### Vault Maintenance
+
+| Script | Purpose |
+|--------|---------|
+| `deduplicate.py` | Find and remove duplicate notes (by content hash + similarity) |
+| `deduplicate_attachments.py` | Find duplicate/orphaned attachments |
+| `compress_images.py` | Compress images >500KB while maintaining quality |
+| `compress_pdfs.py` | Compress PDFs >500KB with SSIM quality checks |
+| `attachment_stats.py` | Analyze attachment sizes by file type |
+
+### Backup & Sync
+
+| Script | Purpose |
+|--------|---------|
+| `sync_to_dropbox.py` | Sync vault to Dropbox backup (hash-based diff, handles deletions) |
+
+### Content Enrichment
+
+| Script | Purpose |
+|--------|---------|
+| `chatgpt_enrichment.py` | LLM-powered quality analysis and tagging of ChatGPT exports |
+| `transcribe_audio.py` | Whisper transcription of audio files in notes |
+| `generate_chapter_diagrams.py` | Generate AI diagrams for book chapter summaries |
+
+### Tag & Metadata Normalization
+
+| Script | Purpose |
+|--------|---------|
+| `fix_language_tags.py` | Auto-detect note language and set `lang/` tags |
+| `escape_inline_hashtags.py` | Escape non-taxonomy hashtags (e.g., Discord channels) |
+| `normalize_curated_tags.py` | Map Evernote tags to vault taxonomy |
+| `normalise_archivo.py` | Add frontmatter to archived notes |
+
+### Validation
+
+| Script | Purpose |
+|--------|---------|
+| `validate_agents.py` | Validate Claude Code agents/skills YAML format |
+
+### ChatGPT Pipeline Helpers
+
+These support `chatgpt_enrichment.py` workflow:
+
+| Script | Purpose |
+|--------|---------|
+| `analyze_chat_stats.py` | Calculate stats for sampling strategy |
+| `delete_low_value.py` | Delete conversations marked low-value |
+| `reanalyze_failed.py` | Retry failed LLM analyses with higher token limits |
+| `triage_reviews.py` | GUI for manual keep/archive decisions |
+
+### Utilities
+
+| Script | Purpose |
+|--------|---------|
+| `obsidian_utils.py` | Shared module (file discovery, hashing, trash handling) |
+| `delete_files_from_md.py` | Delete files listed in a markdown file |
+
 ## Architecture
 
 ### Shared Module: `obsidian_utils.py`
-Common utilities consolidated here to reduce duplication:
+
+Common utilities to reduce duplication:
 - `format_size()` - Human-readable file sizes
 - `get_all_notes()` / `get_all_attachments()` - File discovery (skips `.trash`, `.obsidian`)
-- `move_to_trash()` - Safe deletion with dry-run support and timestamped folders
-- `compute_file_hash()` - MD5 hashing for deduplication
+- `move_to_trash()` - Safe deletion with dry-run support
+- `compute_file_hash()` - MD5 hashing
 - `extract_wiki_links()` / `find_attachment_references()` - Obsidian link parsing
-- `ObsidianToolBase` - Optional base class for CLI tools
-
-When adding new scripts, import from `obsidian_utils` rather than duplicating these patterns.
 
 ### Vault Structure Assumptions
+
 Scripts expect this standard Obsidian layout:
 - `Attachments/` - Images, PDFs, audio files
-- `.trash/` - Deleted files moved here (timestamped subfolders)
+- `.trash/` - Deleted files (timestamped subfolders)
 - Markdown notes anywhere in vault
 
-### Reference Detection
-Scripts parse both Obsidian wiki-links and markdown syntax:
-- `![[filename]]` or `[[filename]]` - Obsidian style
-- `![alt](Attachments/file.png)` - Standard markdown
-
 ### Quality Safeguards
-- `compress_pdfs.py` uses SSIM (Structural Similarity Index) to verify compression doesn't degrade quality below threshold (default 0.92)
+
+- `compress_pdfs.py` uses SSIM to verify compression quality (default threshold: 0.92)
 - `compress_images.py` backs up originals to `Attachments/backup/`
-- `deduplicate.py` uses content hash + difflib similarity (95% threshold) for duplicate detection
+- `deduplicate.py` uses content hash + difflib similarity (95% threshold)
 
-## Script-Specific Notes
+## Key Dependencies
 
-### chatgpt_enrichment.py
-Expects ChatGPT conversations in `3.RECURSOS/AI & ML/ChatGPT Conversations/`. Archives low-value content to `4.ARCHIVO/`. Uses OpenAI API by default, can switch to Ollama with `--provider ollama`.
-
-### transcribe_audio.py
-Runs without dry-run mode. Processes `.m4a`, `.mp3`, `.wav` files, appends transcript to note, moves audio to trash. Model sizes: tiny/base/small/medium/large (base is default).
-
-### delete_files_from_md.py
-Parses markdown files for file paths (wiki-links, backticks, bare paths). Key flags:
-- `--wiki-only` - Only extract `[[...]]` targets
-- `--base-dir` - Resolve relative paths against this directory
-- `--match-basenames` - Search recursively for files by basename
+| Package | Used By |
+|---------|---------|
+| `openai-whisper` | transcribe_audio.py |
+| `pillow` | compress_images.py |
+| `pymupdf` + `numpy` | compress_pdfs.py |
+| `openai` + `python-dotenv` | chatgpt_enrichment.py |
+| `langdetect` | fix_language_tags.py |
 
 ## Subprojects
 
 ### merge-md-notes/
-GUI tool (tkinter) for merging multiple markdown files with clear separators for LLM processing.
+
+GUI tool (tkinter) for merging multiple markdown files with separators for LLM processing.
 
 ### sample-md-notes/
-CLI tool to randomly sample n notes from a vault into a single directory (handles filename conflicts).
+
+CLI tool to randomly sample n notes from a vault into a single directory.

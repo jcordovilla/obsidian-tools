@@ -5,6 +5,7 @@ pillow>=10.0.0  # For compress_images.py (image compression)
 pymupdf>=1.23.0  # For compress_pdfs.py (PDF compression)
 openai>=1.0.0  # For chatgpt_enrichment.py (OpenAI API)
 python-dotenv>=1.0.0  # For chatgpt_enrichment.py (environment variables)
+langdetect>=1.0.9  # For fix_language_tags.py (language detection)
 
 # Python 3.10-3.13 is required
 # Install with: brew install python@3.13 && python3.13 -m venv venv
