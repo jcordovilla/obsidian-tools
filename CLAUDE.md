@@ -43,6 +43,12 @@ python <script>.py --vault /path/to/vault --no-dry-run # Actually modify files
 |--------|---------|
 | `sync_to_dropbox.py` | Sync vault to Dropbox backup (hash-based diff, handles deletions) |
 
+### Export
+
+| Script | Purpose |
+|--------|---------|
+| `export_to_docx.py` | Convert Obsidian markdown note to DOCX using a template (supports headings, lists, tables, images, links, code blocks) |
+
 ### Content Enrichment
 
 | Script | Purpose |
@@ -117,6 +123,7 @@ Scripts expect this standard Obsidian layout:
 | `pymupdf` + `numpy` | compress_pdfs.py |
 | `openai` + `python-dotenv` | chatgpt_enrichment.py |
 | `langdetect` | fix_language_tags.py |
+| `python-docx` + `mistune` | export_to_docx.py |
 
 ## Subprojects
 
