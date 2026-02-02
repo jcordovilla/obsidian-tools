@@ -36,7 +36,7 @@ class VaultSync:
     """Sync Obsidian vault to Dropbox backup."""
 
     # Files/directories to always skip (not worth backing up)
-    SKIP_NAMES = {'.DS_Store', '__pycache__', '.git', '.venv', 'node_modules'}
+    SKIP_NAMES = {'.DS_Store', '__pycache__', '.venv', 'node_modules'}
 
     def __init__(
         self,
