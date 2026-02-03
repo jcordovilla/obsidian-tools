@@ -48,6 +48,7 @@ python <script>.py --vault /path/to/vault --no-dry-run # Actually modify files
 | Script | Purpose |
 |--------|---------|
 | `export_to_docx.py` | Convert Obsidian markdown note to DOCX using a template (supports headings, lists, tables, images, links, code blocks) |
+| `convert_to_markdown.py` | Convert files (PDF, DOCX, PPTX, XLSX, HTML, images, etc.) to Markdown using markitdown |
 
 ### Content Enrichment
 
@@ -124,6 +125,7 @@ Scripts expect this standard Obsidian layout:
 | `openai` + `python-dotenv` | chatgpt_enrichment.py |
 | `langdetect` | fix_language_tags.py |
 | `python-docx` + `mistune` | export_to_docx.py |
+| `markitdown[all]` | convert_to_markdown.py |
 
 ## Subprojects
 

@@ -8,6 +8,7 @@ python-dotenv>=1.0.0  # For chatgpt_enrichment.py (environment variables)
 langdetect>=1.0.9  # For fix_language_tags.py (language detection)
 python-docx>=1.1.0  # For export_to_docx.py (DOCX generation)
 mistune>=3.0.0  # For export_to_docx.py (Markdown AST parsing)
+markitdown[all]  # For convert_to_markdown.py (file-to-markdown conversion)
 
 # Python 3.10-3.13 is required
 # Install with: brew install python@3.13 && python3.13 -m venv venv
