@@ -123,6 +123,7 @@ class MarkdownToDocxExporter:
     """Export a single Obsidian markdown note to DOCX using a template."""
 
     DEFAULT_STYLE_MAP = {
+        'title': 'Title',
         'heading_1': 'Heading 1',
         'heading_2': 'Heading 2',
         'heading_3': 'Heading 3',
@@ -144,13 +145,16 @@ class MarkdownToDocxExporter:
     IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.tif'}
 
     def __init__(self, note_path, template_path, output_path, vault_path,
-                 dry_run=True, style_map_overrides=None):
+                 dry_run=True, style_map_overrides=None,
+                 no_title_promotion=False):
         self.note_path = Path(note_path) if note_path else None
         self.template_path = Path(template_path)
         self.output_path = Path(output_path) if output_path else None
         self.vault_path = Path(vault_path) if vault_path else None
         self.dry_run = dry_run
         self.doc = None
+        self.no_title_promotion = no_title_promotion
+        self._title_rendered = False  # tracks whether first H1 has been rendered
 
         self.style_map = dict(self.DEFAULT_STYLE_MAP)
         if style_map_overrides:
@@ -467,6 +471,24 @@ class MarkdownToDocxExporter:
 
     def _render_heading(self, token):
         level = token.get('attrs', {}).get('level', 1)
+
+        # Title promotion (default): first H1 becomes Title, all others promote by 1
+        if not self.no_title_promotion:
+            if level == 1 and not self._title_rendered:
+                # First H1 → document title (no numbering)
+                self._title_rendered = True
+                self.stats['headings']['Title'] = 1
+
+                if not self.dry_run:
+                    style = self._get_style('title', 'Title')
+                    para = self.doc.add_paragraph(style=style)
+                    self.render_inline(para, token.get('children', []))
+                return
+
+            if self._title_rendered and level > 1:
+                # Promote: H2→H1, H3→H2, etc.
+                level = level - 1
+
         style_key = f'heading_{level}'
         h_key = f'H{level}'
         self.stats['headings'][h_key] = self.stats['headings'].get(h_key, 0) + 1
@@ -702,6 +724,8 @@ class MarkdownToDocxExporter:
         print(f'Template: {self.template_path}')
         print(f'Output:   {self.output_path}')
         print(f'Mode:     DRY RUN')
+        if not self.no_title_promotion:
+            print(f'Title:    First H1 → Title style, remaining headings promoted')
         print('=' * 60)
         print(f'\nContent: {len(raw_text)} characters')
         print(f'\nDocument structure:')
@@ -793,6 +817,9 @@ Examples:
                         help='List all styles in the template and exit')
     parser.add_argument('--style-map', type=Path,
                         help='JSON file mapping markdown elements to template style names')
+    parser.add_argument('--no-title-promotion', action='store_true',
+                        help='Disable title promotion (default: first H1 becomes Title, '
+                             'remaining headings promote one level)')
 
     args = parser.parse_args()
 
@@ -841,6 +868,7 @@ Examples:
         vault_path=args.vault,
         dry_run=not args.no_dry_run,
         style_map_overrides=style_overrides,
+        no_title_promotion=args.no_title_promotion,
     )
     return exporter.run()
 
