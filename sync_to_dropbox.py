@@ -27,6 +27,7 @@ class SyncStats:
     files_new: int = 0
     files_modified: int = 0
     files_unchanged: int = 0
+    files_skipped_fast: int = 0  # unchanged by mtime+size (no hash needed)
     files_deleted: int = 0
     bytes_copied: int = 0
     errors: int = 0
@@ -145,8 +146,19 @@ class VaultSync:
                 return ('new', file_size)
             return ('error', 0)
 
-        # File exists in backup - check if modified
+        # File exists in backup - fast-path: compare mtime + size first
         backup_file = backup_files[rel_path]
+        try:
+            source_stat = source_file.stat()
+            backup_stat = backup_file.stat()
+            # If size matches and source hasn't been modified since backup, skip hash
+            if (source_stat.st_size == backup_stat.st_size
+                    and int(source_stat.st_mtime) <= int(backup_stat.st_mtime)):
+                return ('skipped_fast', 0)
+        except OSError:
+            pass  # fall through to hash comparison
+
+        # mtime or size differ — verify with content hash
         source_hash = self.compute_hash(source_file)
         backup_hash = self.compute_hash(backup_file)
 
@@ -165,7 +177,7 @@ class VaultSync:
                 return ('modified', file_size)
             return ('error', 0)
 
-        # File unchanged
+        # Same content despite different mtime
         return ('unchanged', 0)
 
     def find_orphans(self, source_files: Dict[str, Path], backup_files: Dict[str, Path]) -> List[str]:
@@ -224,6 +236,8 @@ class VaultSync:
                 self.stats.files_modified += 1
                 self.stats.bytes_copied += bytes_copied
                 modified_files.append(rel_path)
+            elif action == 'skipped_fast':
+                self.stats.files_skipped_fast += 1
             elif action == 'unchanged':
                 self.stats.files_unchanged += 1
             # errors are counted in copy_file
@@ -258,7 +272,8 @@ class VaultSync:
         print(f"   Files scanned:   {self.stats.files_scanned}")
         print(f"   New files:       {self.stats.files_new}")
         print(f"   Modified files:  {self.stats.files_modified}")
-        print(f"   Unchanged files: {self.stats.files_unchanged}")
+        print(f"   Unchanged (fast):{self.stats.files_skipped_fast}")
+        print(f"   Unchanged (hash):{self.stats.files_unchanged}")
         if self.delete_orphans:
             print(f"   Deleted files:   {self.stats.files_deleted}")
         if orphans and not self.delete_orphans:
