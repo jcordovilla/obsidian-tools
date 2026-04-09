@@ -183,33 +183,30 @@ def extract_body_text(content: str) -> str:
 
 
 def add_topic_tags(content: str, new_topics: List[str]) -> str:
-    """Add topic/ tags to frontmatter."""
-    frontmatter, body = extract_frontmatter(content)
-    if frontmatter is None:
+    """Add topic/ tags to frontmatter, inserting before the closing ---."""
+    if not content.startswith('---'):
         return content
 
-    # Check multiline tags format
-    tags_match = re.search(r'^(tags:\s*\n(?:\s*-\s*.+\n)+)', frontmatter, re.MULTILINE)
-    if tags_match:
-        old_block = tags_match.group(1)
-        additions = ''.join(f'  - {t}\n' for t in new_topics)
-        new_block = old_block + additions
-        new_frontmatter = frontmatter.replace(old_block, new_block)
-        return new_frontmatter + body
+    # Find the closing --- of frontmatter
+    end_match = re.search(r'\n(---\s*\n)', content[3:])
+    if not end_match:
+        return content
 
-    # Check inline array format
-    inline = re.search(r'^(tags:\s*\[)(.*?)(\])', frontmatter, re.MULTILINE | re.DOTALL)
-    if inline:
-        existing = inline.group(2).strip()
-        topic_str = ', '.join(f"'{t}'" for t in new_topics)
-        if existing:
-            new_tags = f"{existing}, {topic_str}"
-        else:
-            new_tags = topic_str
-        new_frontmatter = frontmatter[:inline.start(2)] + new_tags + frontmatter[inline.end(2):]
-        return new_frontmatter + body
+    # Position of the closing --- in the full content
+    close_pos = end_match.start(1) + 3
 
-    return content
+    # Check existing topics to avoid duplicates
+    frontmatter = content[:close_pos]
+    existing = set(re.findall(r'topic/[\w-]+', frontmatter))
+    new = [t for t in new_topics if t.replace('topic/', '') not in
+           {e.replace('topic/', '') for e in existing}]
+
+    if not new:
+        return content
+
+    # Insert new tags just before the closing ---
+    insertion = ''.join(f'  - {t}\n' for t in new)
+    return content[:close_pos] + insertion + content[close_pos:]
 
 
 def build_batch_prompt(notes: List[Dict]) -> str:
