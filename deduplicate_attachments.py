@@ -10,6 +10,8 @@ Moves duplicates and orphans to trash.
 """
 
 import argparse
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Set
 from collections import defaultdict
