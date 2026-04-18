@@ -304,6 +304,21 @@ def find_attachment_references(vault_path: Path) -> Set[str]:
                 if attachment.exists() and attachment.is_file():
                     rel_path = attachment.relative_to(attachments_path)
                     referenced.add(str(rel_path).replace('\\', '/'))
+            else:
+                # Relative path (./file.svg) or bare filename fallback
+                basename = Path(link.split('?')[0].split('#')[0]).name
+                if basename in filename_to_paths:
+                    for attachment_file in filename_to_paths[basename]:
+                        rel_path = attachment_file.relative_to(attachments_path)
+                        referenced.add(str(rel_path).replace('\\', '/'))
+
+        # Extract CSS url() references (Marp presentations, HTML embeds)
+        for match in re.findall(r"url\(\s*['\"]?([^'\")]+)['\"]?\s*\)", content):
+            basename = Path(match.split('?')[0].split('#')[0]).name
+            if basename in filename_to_paths:
+                for attachment_file in filename_to_paths[basename]:
+                    rel_path = attachment_file.relative_to(attachments_path)
+                    referenced.add(str(rel_path).replace('\\', '/'))
 
     return referenced
 

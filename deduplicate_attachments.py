@@ -164,16 +164,23 @@ class AttachmentDeduplicator:
             
             orphan_name = orphan.name
             orphan_rel_path = str(orphan.relative_to(self.attachments_path)).replace('\\', '/')
-            
-            # Search in all note contents
+
+            # Search in all note contents — only match actual link syntax
+            # to avoid false positives from filenames mentioned in plain text.
             found = False
+            patterns = [
+                f'[[{orphan_name}]]', f'[[{orphan_name}|',  # wikilink
+                f'![[{orphan_name}]]',                       # wiki-embed
+                f']({orphan_name})', f'](./{orphan_name})',  # markdown link
+                f'Attachments/{orphan_name}',                # explicit path
+                f"url('{orphan_name}')", f'url("{orphan_name}")', f'url({orphan_name})',
+            ]
+            if orphan_rel_path != orphan_name:
+                patterns.append(f'[[{orphan_rel_path}]]')
+                patterns.append(f']({orphan_rel_path})')
+                patterns.append(orphan_rel_path)
             for content in notes_content:
-                # Check for various reference patterns
-                if (f'[[{orphan_name}]]' in content or 
-                    f'![[{orphan_name}]]' in content or
-                    f'({orphan_name})' in content or
-                    f'Attachments/{orphan_name}' in content or
-                    orphan_rel_path in content):
+                if any(p in content for p in patterns):
                     found = True
                     break
             
