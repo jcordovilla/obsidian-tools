@@ -52,7 +52,7 @@ ARCHIVE_FOLDER = "4.ARCHIVO/ChatGPT Conversations (Low Value)"
 
 # Model configuration
 OPENAI_MODEL = "gpt-5-mini-2025-08-07"
-OLLAMA_MODEL = "deepseek-r1:32b"
+OLLAMA_MODEL = "qwen3-coder"
 
 # Initialize OpenAI client (only if using OpenAI)
 openai_client = None
@@ -549,16 +549,208 @@ def add_topic_tags(vault_path: Path, dry_run: bool = True):
     print("Will analyze content and add tags like: topic/ppp, topic/infrastructure, etc.")
 
 
-def extract_frameworks(vault_path: Path, dry_run: bool = True):
-    """Extract frameworks and methodologies from conversations."""
-    print("Framework extraction not yet implemented")
-    print("Will identify conversations with frameworks and create distilled notes")
+def load_analysis_report(vault_path: Path) -> List[Dict]:
+    """Load the analysis report JSON. Returns empty list if missing."""
+    report_path = vault_path.parent / 'chatgpt_analysis_report.json'
+    if not report_path.exists():
+        print(f"❌ No analysis report found at {report_path}")
+        print(f"   Run 'analyze' first to generate it.")
+        return []
+    with open(report_path, 'r') as f:
+        return json.load(f)
 
 
-def mine_questions(vault_path: Path, dry_run: bool = True):
-    """Mine valuable questions for content ideas."""
-    print("Question mining not yet implemented")
-    print("Will extract user questions and identify patterns for content creation")
+def extract_frameworks(vault_path: Path, dry_run: bool = True,
+                        min_score: float = 70.0, output_path: Optional[Path] = None):
+    """Extract frameworks and methodologies from analyzed conversations.
+
+    Reads chatgpt_analysis_report.json and produces a markdown digest of
+    conversations flagged has_framework=True, grouped by primary topic.
+    """
+    results = load_analysis_report(vault_path)
+    if not results:
+        return
+
+    frameworks = [
+        r for r in results
+        if r['analysis'].get('has_framework')
+        and r['analysis'].get('framework_description')
+        and r['analysis'].get('quality_score', 0) >= min_score
+    ]
+
+    print(f"Found {len(frameworks)} framework-bearing conversations (score >= {min_score})")
+    print(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
+    print("=" * 80)
+
+    if not frameworks:
+        return
+
+    # Group by primary topic
+    by_topic = {}
+    for r in frameworks:
+        topics = r['analysis'].get('primary_topics') or ['(untagged)']
+        primary = topics[0] if topics else '(untagged)'
+        by_topic.setdefault(primary, []).append(r)
+
+    # Build markdown digest
+    lines = [
+        "---",
+        f"date: {datetime.now().strftime('%Y-%m-%d')}",
+        "tags:",
+        "  - type/note",
+        "  - topic/ai",
+        "  - source/chatgpt",
+        "  - status/review",
+        "  - lang/en",
+        "---",
+        "",
+        "# ChatGPT Frameworks Digest",
+        "",
+        f"> Frameworks and methodologies extracted from {len(frameworks)} high-quality ChatGPT conversations "
+        f"(quality score ≥ {min_score}). Generated from `chatgpt_analysis_report.json`.",
+        "",
+        f"**Total frameworks:** {len(frameworks)}  ",
+        f"**Topics covered:** {len(by_topic)}  ",
+        f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "",
+        "---",
+        "",
+        "## Frameworks by Topic",
+        "",
+    ]
+
+    for topic in sorted(by_topic.keys()):
+        entries = sorted(by_topic[topic], key=lambda r: -r['analysis']['quality_score'])
+        lines.append(f"### {topic} ({len(entries)})")
+        lines.append("")
+        for r in entries:
+            note_name = Path(r['path']).stem
+            score = r['analysis']['quality_score']
+            desc = r['analysis']['framework_description'].strip()
+            # Keep description compact
+            if len(desc) > 400:
+                desc = desc[:400].rsplit(' ', 1)[0] + '…'
+            lines.append(f"- **[[{note_name}]]** (score {score:.0f})")
+            lines.append(f"  {desc}")
+            lines.append("")
+        lines.append("")
+
+    content = '\n'.join(lines)
+
+    # Default output: INBOX
+    if output_path is None:
+        output_path = vault_path / '0.INBOX' / f'ChatGPT Frameworks Digest - {datetime.now().strftime("%Y-%m-%d")}.md'
+
+    if dry_run:
+        print(f"Would write to: {output_path}")
+        print(f"Content preview (first 40 lines):")
+        print('\n'.join(lines[:40]))
+    else:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(content, encoding='utf-8')
+        print(f"✓ Wrote digest to: {output_path}")
+
+    print(f"\n{'=' * 80}")
+    print(f"Frameworks: {len(frameworks)} across {len(by_topic)} topics")
+
+
+def mine_questions(vault_path: Path, dry_run: bool = True,
+                    min_score: float = 70.0, output_path: Optional[Path] = None):
+    """Mine valuable questions for content ideas.
+
+    Reads chatgpt_analysis_report.json and produces a digest of user questions
+    from high-quality conversations, grouped by primary topic. These surface
+    recurring curiosities that could seed article drafts.
+    """
+    results = load_analysis_report(vault_path)
+    if not results:
+        return
+
+    high_quality = [
+        r for r in results
+        if r['analysis'].get('key_questions')
+        and r['analysis'].get('quality_score', 0) >= min_score
+    ]
+
+    print(f"Found {len(high_quality)} conversations with key questions (score >= {min_score})")
+    print(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
+    print("=" * 80)
+
+    if not high_quality:
+        return
+
+    # Group questions by primary topic, keeping source attribution
+    by_topic = {}
+    total_questions = 0
+    for r in high_quality:
+        topics = r['analysis'].get('primary_topics') or ['(untagged)']
+        primary = topics[0] if topics else '(untagged)'
+        questions = r['analysis']['key_questions']
+        note_name = Path(r['path']).stem
+        score = r['analysis']['quality_score']
+        for q in questions:
+            by_topic.setdefault(primary, []).append({
+                'question': q.strip(),
+                'source': note_name,
+                'score': score,
+            })
+            total_questions += 1
+
+    # Build markdown digest
+    lines = [
+        "---",
+        f"date: {datetime.now().strftime('%Y-%m-%d')}",
+        "tags:",
+        "  - type/note",
+        "  - topic/ai",
+        "  - source/chatgpt",
+        "  - status/review",
+        "  - lang/en",
+        "---",
+        "",
+        "# ChatGPT Questions Digest — Content Ideas",
+        "",
+        f"> User questions extracted from {len(high_quality)} high-quality ChatGPT conversations "
+        f"(quality score ≥ {min_score}). Useful as seeds for article drafts or curiosity map.",
+        "",
+        f"**Total questions:** {total_questions}  ",
+        f"**Topics covered:** {len(by_topic)}  ",
+        f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "",
+        "---",
+        "",
+        "## Questions by Topic",
+        "",
+    ]
+
+    for topic in sorted(by_topic.keys(), key=lambda t: -len(by_topic[t])):
+        entries = sorted(by_topic[topic], key=lambda e: -e['score'])
+        lines.append(f"### {topic} ({len(entries)} questions)")
+        lines.append("")
+        for entry in entries:
+            q = entry['question']
+            if len(q) > 300:
+                q = q[:300].rsplit(' ', 1)[0] + '…'
+            lines.append(f"- {q}")
+            lines.append(f"  *→ [[{entry['source']}]] (score {entry['score']:.0f})*")
+        lines.append("")
+
+    content = '\n'.join(lines)
+
+    if output_path is None:
+        output_path = vault_path / '0.INBOX' / f'ChatGPT Questions Digest - {datetime.now().strftime("%Y-%m-%d")}.md'
+
+    if dry_run:
+        print(f"Would write to: {output_path}")
+        print(f"Content preview (first 40 lines):")
+        print('\n'.join(lines[:40]))
+    else:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(content, encoding='utf-8')
+        print(f"✓ Wrote digest to: {output_path}")
+
+    print(f"\n{'=' * 80}")
+    print(f"Questions: {total_questions} across {len(by_topic)} topics")
 
 
 def update_frontmatter(vault_path: Path, dry_run: bool = True):
@@ -733,6 +925,12 @@ def main():
     parser.add_argument('--threshold', type=float, default=40.0,
                        help='Quality threshold for cleanup (default: 40.0)')
 
+    parser.add_argument('--min-score', type=float, default=70.0,
+                       help='Minimum quality score for extract/mine-questions (default: 70.0)')
+
+    parser.add_argument('--output', type=Path,
+                       help='Output path for extract/mine-questions digest (default: 0.INBOX/...)')
+
     args = parser.parse_args()
 
     vault_path = args.vault.resolve()
@@ -756,9 +954,9 @@ def main():
     elif args.command == 'tag':
         add_topic_tags(vault_path, dry_run)
     elif args.command == 'extract':
-        extract_frameworks(vault_path, dry_run)
+        extract_frameworks(vault_path, dry_run, args.min_score, args.output)
     elif args.command == 'mine-questions':
-        mine_questions(vault_path, dry_run)
+        mine_questions(vault_path, dry_run, args.min_score, args.output)
     elif args.command == 'cleanup':
         cleanup_conversations(vault_path, args.threshold, dry_run)
 
