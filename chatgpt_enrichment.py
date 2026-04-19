@@ -931,6 +931,343 @@ def mine_questions(vault_path: Path, dry_run: bool = True,
     print(f"Report: {output_path}")
 
 
+# ============================================================================
+# APPLY: gated write from extract JSONL (§4.3)
+# ============================================================================
+
+# Topic → domain subfolder routing (heuristic, not exhaustive)
+# Each rule: (list of topic keywords, target subfolder)
+ROUTING_RULES = [
+    (['ppp', 'concession', 'concesion', 'project finance', 'bankability',
+      'availability payment', 'spv', 'dbfo', 'dbfm'],
+     'PPPs'),
+    (['rag', 'agent', 'llm', 'prompt', 'embedding', 'ai ', 'generative',
+      'claude', 'gpt', 'model', 'vector', 'retrieval', 'automation', 'code',
+      'python', 'development', 'architecture'],
+     'Digital Transformation'),
+    (['risk', 'resilience', 'climate', 'uncertainty', 'hazard', 'disaster',
+      'insurance', 'vulnerability'],
+     'Risk Management'),
+    (['policy', 'governance', 'regulation', 'regulatory', 'public sector',
+      'reform', 'legal', 'law', 'lcsp', 'directive'],
+     'Infrastructure Policy'),
+    (['investment', 'fund', 'financing', 'bond', 'equity', 'debt', 'ppp fund',
+      'infrastructure bond', 'pension'],
+     'Infrastructure Investment'),
+    (['sustainability', 'esg', 'green', 'circular', 'taxonomy'],
+     'Sustainability'),
+]
+
+DEFAULT_ROUTING = 'Digital Transformation'  # catch-all for code/AI/tooling
+
+
+def _route_artefact(primary_topics: List[str], artefact_text: str) -> str:
+    """Pick domain subfolder based on topic keywords. Heuristic, case-insensitive."""
+    haystack = ' '.join(primary_topics + [artefact_text]).lower()
+    for keywords, folder in ROUTING_RULES:
+        if any(kw in haystack for kw in keywords):
+            return folder
+    return DEFAULT_ROUTING
+
+
+def _slug(text: str, max_len: int = 80) -> str:
+    """Produce a filesystem-safe slug from a title. Preserves accents."""
+    # Replace path separators and invalid chars
+    s = re.sub(r'[/\\:*?"<>|]', '-', text)
+    s = re.sub(r'\s+', ' ', s).strip()
+    if len(s) > max_len:
+        s = s[:max_len].rsplit(' ', 1)[0]
+    return s
+
+
+def _frontmatter_block(artefact_type: str, source_title: str, source_path: str,
+                       topics: List[str], extra: Dict = None) -> str:
+    """Standard frontmatter for distilled artefacts."""
+    topic_tags = [f"  - topic/{t.lower().replace(' ', '-')}"
+                  for t in topics[:3] if t and len(t) < 40]
+    lines = [
+        "---",
+        f"date: {datetime.now().strftime('%Y-%m-%d')}",
+        "tags:",
+        f"  - type/{artefact_type}",
+        "  - source/chatgpt-distilled",
+        "  - status/review",
+        "  - lang/en",
+    ]
+    lines.extend(topic_tags)
+    lines.extend([
+        f"source_conversation: \"[[{Path(source_path).stem}]]\"",
+        f"distilled_from_score: {extra.get('score') if extra else 'null'}",
+        "---",
+        "",
+    ])
+    return '\n'.join(lines)
+
+
+def _write_framework_note(vault: Path, entry: Dict, fw: Dict) -> Optional[Path]:
+    """Emit a Framework Card note. Returns the path written, or None if skipped."""
+    name = fw.get('name', '').strip()
+    if not name:
+        return None
+
+    folder = _route_artefact(entry.get('primary_topics', []), name + ' ' + fw.get('definition', ''))
+    target_dir = vault / '3.RECURSOS' / 'Domain Knowledge' / folder / 'Frameworks'
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{_slug(name)}.md"
+    path = target_dir / filename
+    if path.exists():
+        return None  # Dedup: skip duplicates by exact filename
+
+    fm = _frontmatter_block(
+        'framework', entry['title'], entry['conv_id'],
+        entry.get('primary_topics', []),
+        extra={'score': entry.get('score')}
+    )
+
+    body = [f"# {name}", ""]
+    if fw.get('definition'):
+        body += ["## Definition", "", fw['definition'].strip(), ""]
+    if fw.get('when_to_use'):
+        body += ["## When to Use", "", fw['when_to_use'].strip(), ""]
+    if fw.get('steps'):
+        body += ["## Steps", ""] + [f"{i+1}. {s.strip()}" for i, s in enumerate(fw['steps'])] + [""]
+    if fw.get('failure_modes'):
+        body += ["## Failure Modes", ""] + [f"- {fm.strip()}" for fm in fw['failure_modes']] + [""]
+
+    body += [
+        "## Source",
+        "",
+        f"Distilled from [[{Path(entry['conv_id']).stem}]] "
+        f"(quality score {entry.get('score', '?')}).",
+        "",
+    ]
+
+    path.write_text(fm + '\n'.join(body), encoding='utf-8')
+    return path
+
+
+def _write_playbook_note(vault: Path, entry: Dict, pb: Dict) -> Optional[Path]:
+    """Emit a Playbook note."""
+    title = pb.get('title', '').strip()
+    if not title:
+        return None
+
+    folder = _route_artefact(entry.get('primary_topics', []), title + ' ' + pb.get('trigger', ''))
+    target_dir = vault / '3.RECURSOS' / 'Domain Knowledge' / folder / 'Playbooks'
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{_slug(title)}.md"
+    path = target_dir / filename
+    if path.exists():
+        return None
+
+    fm = _frontmatter_block(
+        'playbook', entry['title'], entry['conv_id'],
+        entry.get('primary_topics', []),
+        extra={'score': entry.get('score')}
+    )
+
+    body = [f"# {title}", ""]
+    if pb.get('trigger'):
+        body += ["## Trigger", "", pb['trigger'].strip(), ""]
+    if pb.get('applicable_when'):
+        body += ["## Applicable When", "", pb['applicable_when'].strip(), ""]
+    if pb.get('steps'):
+        body += ["## Steps", ""] + [f"{i+1}. {s.strip()}" for i, s in enumerate(pb['steps'])] + [""]
+    body += [
+        "## Source",
+        "",
+        f"Distilled from [[{Path(entry['conv_id']).stem}]] "
+        f"(quality score {entry.get('score', '?')}).",
+        "",
+    ]
+
+    path.write_text(fm + '\n'.join(body), encoding='utf-8')
+    return path
+
+
+def _write_claim_note(vault: Path, entry: Dict, cl: Dict) -> Optional[Path]:
+    """Emit a Claim Card."""
+    text = cl.get('text', '').strip()
+    if not text or len(text) < 15:
+        return None
+
+    folder = _route_artefact(entry.get('primary_topics', []), text + ' ' + cl.get('domain', ''))
+    target_dir = vault / '3.RECURSOS' / 'Domain Knowledge' / folder / 'Claims'
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # Claim filenames: first N words of text
+    slug_source = ' '.join(text.split()[:10])
+    filename = f"{_slug(slug_source, max_len=80)}.md"
+    path = target_dir / filename
+    if path.exists():
+        return None
+
+    fm = _frontmatter_block(
+        'claim', entry['title'], entry['conv_id'],
+        entry.get('primary_topics', []),
+        extra={'score': entry.get('score')}
+    )
+
+    body = [
+        f"# {slug_source[:80]}",
+        "",
+        "## Claim",
+        "",
+        text,
+        "",
+        f"**Domain:** {cl.get('domain', '—')}  ",
+        f"**Confidence:** {cl.get('confidence', '—')}",
+        "",
+    ]
+    if cl.get('source_excerpt'):
+        body += ["## Source Excerpt", "", f"> {cl['source_excerpt'].strip()}", ""]
+    body += [
+        "## Source",
+        "",
+        f"Distilled from [[{Path(entry['conv_id']).stem}]].",
+        "",
+    ]
+
+    path.write_text(fm + '\n'.join(body), encoding='utf-8')
+    return path
+
+
+def _write_glossary_note(vault: Path, entry: Dict, g: Dict) -> Optional[Path]:
+    """Emit a Glossary entry."""
+    term = g.get('term', '').strip()
+    one_line = g.get('one_line', '').strip()
+    if not term or not one_line:
+        return None
+
+    target_dir = vault / '3.RECURSOS' / 'Domain Knowledge' / 'Glossary'
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{_slug(term, max_len=80)}.md"
+    path = target_dir / filename
+    if path.exists():
+        return None  # Glossary dedup: skip existing terms
+
+    fm = _frontmatter_block(
+        'glossary-term', entry['title'], entry['conv_id'],
+        entry.get('primary_topics', []),
+        extra={'score': entry.get('score')}
+    )
+
+    body = [
+        f"# {term}",
+        "",
+        one_line,
+        "",
+        f"**Topic:** {g.get('topic', '—')}",
+        "",
+        "## Source",
+        "",
+        f"Distilled from [[{Path(entry['conv_id']).stem}]].",
+        "",
+    ]
+
+    path.write_text(fm + '\n'.join(body), encoding='utf-8')
+    return path
+
+
+def apply_extracts(vault_path: Path, report_path: Optional[Path] = None,
+                    dry_run: bool = True, types: Optional[List[str]] = None,
+                    limit: Optional[int] = None):
+    """Read an extract JSONL report and write typed artefact notes.
+
+    Mirror of apply_tags_from_report.py (§4.3 of strategy).
+    Dedup: skips if a file with the same generated filename already exists
+    in the target folder (simple name-based; LanceDB embedding dedup deferred).
+
+    Args:
+        report_path: JSONL file to consume. Defaults to most recent in reports/.
+        types: subset of ['framework', 'playbook', 'claim', 'glossary'].
+               Defaults to all.
+        limit: cap number of conversations processed.
+    """
+    if types is None:
+        types = ['framework', 'playbook', 'claim', 'glossary']
+
+    # Default: latest report
+    if report_path is None:
+        reports_dir = Path(__file__).parent / 'reports'
+        if not reports_dir.exists():
+            print(f"❌ No reports directory at {reports_dir}. Run 'extract' first.")
+            return
+        candidates = sorted(reports_dir.glob('chatgpt_extract_*.jsonl'))
+        if not candidates:
+            print(f"❌ No extract reports found. Run 'extract' first.")
+            return
+        report_path = candidates[-1]
+
+    if not report_path.exists():
+        print(f"❌ Report not found: {report_path}")
+        return
+
+    print(f"Report: {report_path}")
+    print(f"Types:  {', '.join(types)}")
+    print(f"Mode:   {'DRY RUN' if dry_run else 'LIVE'}")
+    print("=" * 80)
+
+    entries = []
+    with open(report_path, 'r') as f:
+        for line in f:
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    if limit:
+        entries = entries[:limit]
+
+    print(f"Loaded {len(entries)} conversation entries.")
+
+    writers = {
+        'framework': (_write_framework_note, 'frameworks'),
+        'playbook': (_write_playbook_note, 'playbooks'),
+        'claim': (_write_claim_note, 'claims'),
+        'glossary': (_write_glossary_note, 'glossary'),
+    }
+
+    stats = {t: {'written': 0, 'skipped': 0} for t in writers}
+
+    for entry in entries:
+        for art_type, (writer, key) in writers.items():
+            if art_type not in types:
+                continue
+            for artefact in entry.get(key, []):
+                if dry_run:
+                    # Simulate routing and filename
+                    if art_type == 'glossary':
+                        name = artefact.get('term', '(unnamed)')
+                    elif art_type == 'claim':
+                        name = ' '.join(artefact.get('text', '(unnamed)').split()[:10])
+                    else:
+                        name = artefact.get('name') or artefact.get('title') or '(unnamed)'
+                    stats[art_type]['written'] += 1
+                    if len(name) > 0:
+                        folder_hint = _route_artefact(
+                            entry.get('primary_topics', []),
+                            name
+                        ) if art_type != 'glossary' else 'Glossary'
+                        print(f"  [DRY] {art_type:10s} → {folder_hint}/{_slug(name, 60)}.md")
+                else:
+                    path = writer(vault_path, entry, artefact)
+                    if path is not None:
+                        stats[art_type]['written'] += 1
+                    else:
+                        stats[art_type]['skipped'] += 1
+
+    print(f"\n{'=' * 80}")
+    print(f"Results:")
+    for art_type in writers:
+        if art_type in types:
+            s = stats[art_type]
+            print(f"  {art_type:10s}  written: {s['written']:4d}  skipped: {s['skipped']:4d}")
+
+
 def update_frontmatter(vault_path: Path, dry_run: bool = True):
     """Update file frontmatter with analysis metadata."""
     import re
@@ -1088,7 +1425,7 @@ def main():
     parser.add_argument('--vault', type=Path, required=True,
                        help='Path to Obsidian vault')
 
-    parser.add_argument('command', choices=['analyze', 'update-frontmatter', 'tag', 'extract', 'mine-questions', 'cleanup'],
+    parser.add_argument('command', choices=['analyze', 'update-frontmatter', 'tag', 'extract', 'apply', 'mine-questions', 'cleanup'],
                        help='Command to run')
 
     parser.add_argument('--provider', choices=['openai', 'ollama'], default='openai',
@@ -1115,6 +1452,13 @@ def main():
     parser.add_argument('--output', type=Path,
                        help='Output path for extract/mine-questions report (default: ./reports/...)')
 
+    parser.add_argument('--report', type=Path,
+                       help='JSONL report to apply (default: latest in ./reports/)')
+
+    parser.add_argument('--types', nargs='+',
+                       choices=['framework', 'playbook', 'claim', 'glossary'],
+                       help='Artefact types to apply (default: all)')
+
     args = parser.parse_args()
 
     vault_path = args.vault.resolve()
@@ -1140,6 +1484,8 @@ def main():
     elif args.command == 'extract':
         tier = 'all' if args.tier == 'all' else args.tier
         extract_frameworks(vault_path, dry_run, tier, args.limit, args.output)
+    elif args.command == 'apply':
+        apply_extracts(vault_path, args.report, dry_run, args.types, args.limit)
     elif args.command == 'mine-questions':
         mine_questions(vault_path, dry_run, args.min_cluster_size, args.min_score, args.output)
     elif args.command == 'cleanup':
