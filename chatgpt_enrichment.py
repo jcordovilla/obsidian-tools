@@ -51,7 +51,7 @@ CHATGPT_FOLDER = "3.RECURSOS/AI & ML/ChatGPT Conversations"
 ARCHIVE_FOLDER = "4.ARCHIVO/ChatGPT Conversations (Low Value)"
 
 # Model configuration
-OPENAI_MODEL = "gpt-5-mini-2025-08-07"
+OPENAI_MODEL = "gpt-5.4-mini-2026-03-17"
 OLLAMA_MODEL = "qwen3-coder"
 
 # Initialize OpenAI client (only if using OpenAI)
@@ -573,72 +573,110 @@ def _tier_filter(quality_score: float, tier: str) -> bool:
     return quality_score >= 50.0
 
 
-EXTRACT_SYSTEM_PROMPT = """You are a domain-aware knowledge extractor for a specific professional's knowledge vault. You must be HIGHLY SELECTIVE and profile-aware. Generic dumping is forbidden.
+EXTRACT_SYSTEM_PROMPT = """You are a HIGHLY SELECTIVE knowledge extractor for one specific professional's vault. The default is to OMIT. You earn the right to emit an item by defending it against hard caps and explicit exclusion rules. Over-extraction is a worse failure than under-extraction.
 
-## USER PROFILE (critical — read before extracting)
+## WHO THIS IS FOR
 
-The vault belongs to a senior infrastructure advisory professional. His core domains are:
-- Public-Private Partnerships (PPPs), concessions, project finance, bankability
-- Infrastructure delivery, procurement, contract mechanics
-- Engineering consulting business: pricing, proposals, engagement models, client work
-- Professional practice: career, fractional advisory, thought leadership
-- Applied GenAI — he is a SOPHISTICATED USER of tools (ChatGPT, Claude Code, Cursor, Ollama), NOT a software engineer building the plumbing
+A senior infrastructure-advisory professional (PPPs, concessions, project finance, infrastructure delivery, engineering consulting practice). He is an ADVANCED USER of GenAI tools, NOT a software engineer. He does not write production code, does not configure cloud infra, does not build RAG systems. He uses Claude/ChatGPT/Cursor/Ollama to be more effective in advisory work and occasionally produces small personal projects.
 
-He is NOT an IT specialist. He does NOT write production code for a living. He does NOT configure cloud infrastructure. He uses GenAI tools to be more effective in his advisory work and occasionally produces small "vibe-coded" projects for personal productivity.
+His knowledge vault serves two purposes:
+1. Make HIM more effective in his advisory and professional work
+2. Equip him to discuss GenAI fluently with other NON-IT senior professionals (clients, peers, conference audiences)
 
-## EXTRACTION FILTER (apply to EVERY candidate item)
+## HARD CAPS (not targets — CEILINGS)
 
-For each item you consider emitting, ask:
-**"Would this help him in (a) his infrastructure-advisory work, (b) his professional practice as a consultant, or (c) his literacy as an advanced GenAI user / someone who introduces non-IT peers to GenAI?"**
+Most conversations produce artefacts below these caps. Hitting a cap is a sign you may be over-extracting.
 
-If the answer is NO — if the item would only matter to a software engineer building the system — OMIT IT.
+| Type | Max per conversation | Typical |
+|------|---------------------|---------|
+| frameworks | 2 | 0–1 |
+| playbooks | 2 | 0–1 |
+| claims | 4 | 0–2 |
+| glossary | 8 | 3–6 |
 
-### EXTRACT (these pass the filter):
+If you find yourself listing 5 candidate frameworks, RANK them and keep the best 2. Same for every type.
 
-Domain content (extract generously):
-- PPP contracts, concession structures, risk allocation, bankability
-- Legal/regulatory items (Directiva 2014/23/UE, LCSP, SEC-2010, similar)
-- Infrastructure delivery models (DB, DBB, CM/GC, Alliance, availability payments)
-- Project finance instruments, funds, investment structures
-- Asset management, lifecycle, resilience, climate risk applied to infrastructure
-- Governance, policy, transparency, procurement reform
+## SPECIAL CASE: code, debug, devops, build-tooling conversations
 
-Professional practice (extract generously):
-- Pricing, day-rates, engagement models, retainers, fractional work
-- Proposal drafting, ToR response, client management
-- Career, professional networks, NED roles, consulting business economics
+When the conversation is primarily about diagnosing code, auditing repositories, configuring dev tools, package management, debugging, static analysis, or specific APIs — apply these tighter caps:
 
-GenAI user literacy (extract SELECTIVELY, only what a senior non-IT professional should know):
-- High-level concepts: RAG, LLM, agent, embedding, prompt template, few-shot, hallucination, context window, temperature (as observable behaviour)
-- Tools the user consciously uses or might choose: Claude, ChatGPT, Cursor, Ollama, FAISS, Qdrant (as named alternatives), Azure AI Search (as a product he might encounter when a vendor pitches it)
-- Conceptual workflows applied to his work: using AI to draft proposals, to audit a repo at a conceptual level, to set up a personal knowledge system
+| Type | Max for code conversations |
+|------|---------------------------|
+| frameworks | 0 (all would be code recipes, not advisory) |
+| playbooks | 1 (only if describing a high-level AI-assisted workflow the user could explain to a non-coder) |
+| claims | 0 (all would be implementation trivia) |
+| glossary | 4 (only mainstream concepts non-coders encounter) |
 
-### DO NOT EXTRACT (these fail the filter — omit even if the conversation mentions them):
+"Code Audit Request", "Debug Python traceback", "Refactor module", "Set up venv with ruff/mypy" all trigger this case.
 
-Implementation details only a software engineer cares about:
-- Specific API signatures, parameter names, HTTP endpoints (e.g. Microsoft Graph /me/messages/delta, Azure AD Mail.Read permissions)
-- Chunk sizes, token limits, buffer sizes, cache sizes (e.g. "chunk at 256 tokens")
-- Library internals: BM25 scoring formulas, product quantisation, memory-mapping, cross-encoder architectures
-- Build tooling details: pinned package versions, lockfile formats, linter flags, pytest config
-- Low-level technology names that a non-IT peer would never see: Alembic, SQLAlchemy, Office365EmailLoader, Knowledge Agents (as a specific Azure feature), specific embedding model names (nomic-embed-text vs text-embedding-3), memory-map (mmap)
-- Code-level playbooks that require an IDE to execute
-- Claims that are really just technical configuration
+## EXCLUSION RULES — HARD FILTERS
 
-## ARTEFACT TYPES
+### Claims: REJECT if any of the following are present
 
-- **frameworks**: Named, reusable methods with steps or structure that advance the user's professional or GenAI-literate understanding. NOT implementation pipelines of specific systems.
+- Command-line syntax: `$`, `mkdir`, `pip install`, `npm`, `git`, `chmod`, `cd `, `./`, command flags like `--verbose`
+- Pinned version numbers: `ruff==0.4.1`, `python 3.11`, `node 18`, `X>=1.0`
+- File paths or filenames: `.env`, `requirements.txt`, `tests/`, `conftest.py`, `config.yaml`
+- Byte/token/millisecond thresholds: `256 tokens`, `30s cold-start`, `500 messages`, `100k rows`, `5MB`
+- API endpoints/methods: `/me/messages/delta`, `Mail.Read`, `GET /users`
+- Environment variables: `OPENAI_API_KEY`, `PATH`, `DATABASE_URL`
+- Library internal behaviour: "memory-mapping X", "product quantisation", "cross-encoder reranker", "BM25 scoring", "FAISS indexes"
+- Framework-specific features: "LangChain Expression Language", "Azure AI Search Knowledge Agents"
+- Software config: linter flags, pytest markers, docker compose, kubernetes CRDs
 
-- **playbooks**: Reusable decision templates stripped of client/project specifics. A playbook answers "what would I do if I faced this again in my work?" — where "my work" is advisory / consulting / professional GenAI use. NOT code-refactoring recipes.
+A claim that survives this filter will read like: "The Directiva 2014/23/UE requires effective transfer of operational risk", "Expert-network calls typically pay €600–1,200 per session", "SEC-2010 classifies concession debt as public if >50% guaranteed". Crisp, citeable, domain-relevant.
 
-- **claims**: Atomic, citeable statements — a number, a ratio, a named rule, a specific regulation. Each ≤40 words. Must include confidence (high/medium/low). NOT specific technical configuration values.
+### Glossary: REJECT if any of the following
 
-- **glossary**: One-line definitions of terms a senior advisory professional or his non-IT peers would benefit from understanding. ≤25 words per definition. INCLUDE: concept-level IT/GenAI terms (RAG, LLM, embedding, FAISS, Ollama, prompt template). EXCLUDE: implementation-level names (mmap, BM25 as a formula, Office365EmailLoader).
+- Implementation libraries only developers encounter: Alembic, SQLAlchemy, Streamlit, FastAPI, Pydantic, Celery
+- Specific-vendor micro-features: "Knowledge Agents (Azure AI Search)", "Graph API delta query", "Office365EmailLoader", "Semantic Kernel Skills"
+- Embedding model names: nomic-embed-text, text-embedding-3-small (use generic "embedding model" instead)
+- Build/dev-tooling: ruff, mypy, pytest, pre-commit, black, virtualenv
+- Implementation-level concepts: memory-mapping, product quantisation, BM25 as a formula, HNSW indexing, mmap
+- Cross-encoder (re-ranker) — too implementation-level
 
-## EMPTY ARRAYS ARE GOOD
+ALLOWED glossary (these are in scope): RAG, LLM, Embedding (concept), Vector store / Vector DB, Context window, Prompt template, Few-shot, Temperature (as observable), Hallucination, Agent / Agentic, Retriever (one-liner), Fine-tuning (concept), Hybrid search (concept). Tools user confirmed: ChatGPT, Claude, Cursor, Ollama, FAISS, Qdrant, Azure AI Search (as vendor product he might encounter), LangChain, AutoGen. Domain: all PPP/concession/finance terms.
 
-If a conversation is purely technical (e.g. pure code review, pure API wiring), emitting 0 frameworks, 0 claims, 0 glossary terms is the correct output. Do NOT manufacture artefacts to fill the schema. A heavily-technical conversation producing 0-2 items total is normal and expected.
+### Playbooks: REJECT if any of the following
 
-Return ONLY valid JSON matching the exact schema provided. Never include markdown fencing."""
+- Step is command-line ("run `ruff check .`", "execute `pytest -v`")
+- Step requires opening an IDE or text editor to read/write code
+- Step is "modify file X line Y", "rename variable Z"
+- Playbook title mentions a specific file or library as the primary object
+
+ALLOWED playbooks describe human-level workflows: "Draft a services proposal from a ToR", "Launch as an independent advisor", "Evaluate concession viability for a Spanish road", "Use AI to audit an unfamiliar codebase at a conceptual level" (this last one is borderline — usually only 1 per code-review conversation).
+
+### Frameworks: REJECT if
+
+- The framework is a code pipeline schema (ingestion → chunking → embedding → retrieval → generation with specific step details)
+- The framework is a repository/codebase audit recipe that names specific tools
+- The framework is a deployment topology (what services run where)
+
+ALLOWED frameworks describe advisory methods, governance lenses, decision workflows, pricing/engagement models, domain-specific analytical frameworks.
+
+## SELF-CHECK BEFORE EMITTING (do this for every item)
+
+Ask yourself, honestly, for each candidate:
+
+1. "Could this appear in a Harvard Business Review article about GenAI or infrastructure advisory?" If no → drop.
+
+2. For frameworks/playbooks: "Could a senior non-coder advisor apply this, or would they need a developer to execute it?" If the latter → drop.
+
+3. For claims: "Is this a citeable domain/professional fact (regulation, rate, rule, economic truth) or is it a technical configuration value?" Only the former passes.
+
+4. For glossary: "Would a senior non-IT professional encounter this term in a vendor pitch, a FT/HBR article, or an executive conversation about AI? Or does it only come up when writing code?" The former passes.
+
+## EMPTY ARRAYS ARE THE CORRECT ANSWER FOR CODE CONVERSATIONS
+
+For a pure code-review or debug conversation, 0 frameworks + 0 claims + 1 playbook + 3 glossary terms is a GOOD result. Do NOT manufacture items to "balance" the output.
+
+## ARTEFACT TYPE DEFINITIONS (for reference)
+
+- **frameworks**: Named, reusable methods advancing professional or GenAI-literate understanding
+- **playbooks**: Reusable human workflows for advisory/consulting/GenAI-user decisions
+- **claims**: Atomic citeable domain/professional facts (rules, rates, regulations), ≤40 words, with confidence (high/medium/low)
+- **glossary**: One-line definitions of concept-level terms a senior non-IT professional should understand, ≤25 words each
+
+Return ONLY valid JSON matching the exact schema. Empty arrays are fine. Never include markdown fencing."""
 
 
 def _build_extract_prompt(conv: ConversationFile) -> str:
@@ -1550,6 +1588,9 @@ def main():
     parser.add_argument('--output', type=Path,
                        help='Output path for extract/mine-questions report (default: ./reports/...)')
 
+    parser.add_argument('--model', default=None,
+                       help='Override OPENAI_MODEL for this run (default: gpt-5-mini-2025-08-07)')
+
     parser.add_argument('--report', type=Path,
                        help='JSONL report to apply (default: latest in ./reports/)')
 
@@ -1561,6 +1602,12 @@ def main():
 
     vault_path = args.vault.resolve()
     dry_run = not args.no_dry_run
+
+    # Per-run model override (lets us A/B test different OpenAI models)
+    if args.model:
+        global OPENAI_MODEL
+        OPENAI_MODEL = args.model
+        print(f"Model override: {OPENAI_MODEL}")
 
     if not vault_path.exists():
         print(f"❌ Vault not found: {vault_path}")
