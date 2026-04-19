@@ -935,38 +935,72 @@ def mine_questions(vault_path: Path, dry_run: bool = True,
 # APPLY: gated write from extract JSONL (§4.3)
 # ============================================================================
 
-# Topic → domain subfolder routing (heuristic, not exhaustive)
-# Each rule: (list of topic keywords, target subfolder)
+# Conversation → target area routing (heuristic, conversation-level).
+# Each rule: (list of phrase patterns, target path segments from 3.RECURSOS/).
+# Order matters: first matching rule wins. Evaluated against conversation
+# title + primary_topics concatenated (lowercase).
 ROUTING_RULES = [
-    (['ppp', 'concession', 'concesion', 'project finance', 'bankability',
-      'availability payment', 'spv', 'dbfo', 'dbfm'],
-     'PPPs'),
-    (['rag', 'agent', 'llm', 'prompt', 'embedding', 'ai ', 'generative',
-      'claude', 'gpt', 'model', 'vector', 'retrieval', 'automation', 'code',
-      'python', 'development', 'architecture'],
-     'Digital Transformation'),
-    (['risk', 'resilience', 'climate', 'uncertainty', 'hazard', 'disaster',
-      'insurance', 'vulnerability'],
-     'Risk Management'),
-    (['policy', 'governance', 'regulation', 'regulatory', 'public sector',
-      'reform', 'legal', 'law', 'lcsp', 'directive'],
-     'Infrastructure Policy'),
-    (['investment', 'fund', 'financing', 'bond', 'equity', 'debt', 'ppp fund',
-      'infrastructure bond', 'pension'],
-     'Infrastructure Investment'),
-    (['sustainability', 'esg', 'green', 'circular', 'taxonomy'],
-     'Sustainability'),
+    # Career, consulting business, rate-setting — goes to Professional Dev
+    (['career', 'engagement model', 'consulting rates', 'consulting business',
+      'freelance', 'freelancing', 'fractional', 'non-executive director',
+      ' ned ', 'professional network', 'pricing strategy', 'pricing -',
+      'transición', 'cambio profesional', 'day rate', 'billable'],
+     ['Professional Dev']),
+
+    # PPPs, concessions, project finance — PPPs folder
+    (['ppp', 'p3 ', 'concession', 'concesion', 'project finance',
+      'bankability', 'availability payment', 'spv', 'dbfo', 'dbfm',
+      'offtake', 'psc ', 'value for money', 'vfm ', 'shadow toll',
+      'riesgo operacional', 'equilibrio económico'],
+     ['Domain Knowledge', 'PPPs']),
+
+    # AI/LLM/RAG engineering — Digital Transformation
+    (['rag', 'llm', 'agentic', 'prompt engineering', 'prompt optimization',
+      'prompt optimisation', 'embedding', 'vector store', 'vector database',
+      'gpt-', 'claude ', 'openai', 'ollama', 'faiss', 'langchain', 'langgraph',
+      'ai architecture', 'ai assistant', 'ai agent', 'ai solution',
+      'generative ai', 'fine-tun', 'retrieval-augmented'],
+     ['Domain Knowledge', 'Digital Transformation']),
+
+    # Code/software practice — Engineering subfolder (not Domain Knowledge)
+    (['code audit', 'repository audit', 'code review', 'dev tooling',
+      'software architecture', 'refactor', 'test coverage', 'ci/cd',
+      'python package', 'static analysis'],
+     ['Engineering']),
+
+    # Risk, resilience, climate
+    (['risk management', 'climate risk', 'resilience', 'disaster risk',
+      'asset exposure', 'vulnerability', 'hazard', 'insurance'],
+     ['Domain Knowledge', 'Risk Management']),
+
+    # Policy, regulation, governance
+    (['policy', 'regulation', 'regulatory', 'governance', 'public sector reform',
+      'legal framework', 'lcsp', 'directive', 'sector público', 'transparency'],
+     ['Domain Knowledge', 'Infrastructure Policy']),
+
+    # Investment, funds, bonds, financing instruments
+    (['infrastructure investment', 'infrastructure fund', 'investment fund',
+      'green bond', 'infrastructure bond', 'pension fund', 'blended finance'],
+     ['Domain Knowledge', 'Infrastructure Investment']),
+
+    # Sustainability, ESG, green
+    (['sustainability', 'esg', 'green finance', 'circular economy',
+      'climate adaptation', 'eu taxonomy'],
+     ['Domain Knowledge', 'Sustainability']),
 ]
 
-DEFAULT_ROUTING = 'Digital Transformation'  # catch-all for code/AI/tooling
+# Default: land in _Uncategorized under Domain Knowledge, to force manual
+# review. Nothing should auto-land in a real domain folder without a match.
+DEFAULT_ROUTING = ['Domain Knowledge', '_Uncategorized']
 
 
-def _route_artefact(primary_topics: List[str], artefact_text: str) -> str:
-    """Pick domain subfolder based on topic keywords. Heuristic, case-insensitive."""
-    haystack = ' '.join(primary_topics + [artefact_text]).lower()
-    for keywords, folder in ROUTING_RULES:
-        if any(kw in haystack for kw in keywords):
-            return folder
+def _route_conversation(title: str, primary_topics: List[str]) -> List[str]:
+    """Decide target area once per conversation. Returns path segments from
+    3.RECURSOS/. All artefacts from the same conversation share this route."""
+    haystack = ' '.join([title] + list(primary_topics)).lower()
+    for patterns, segments in ROUTING_RULES:
+        if any(p in haystack for p in patterns):
+            return segments
     return DEFAULT_ROUTING
 
 
@@ -1010,8 +1044,11 @@ def _write_framework_note(vault: Path, entry: Dict, fw: Dict) -> Optional[Path]:
     if not name:
         return None
 
-    folder = _route_artefact(entry.get('primary_topics', []), name + ' ' + fw.get('definition', ''))
-    target_dir = vault / '3.RECURSOS' / 'Domain Knowledge' / folder / 'Frameworks'
+    segments = _route_conversation(entry.get('title', ''), entry.get('primary_topics', []))
+    target_dir = vault / '3.RECURSOS'
+    for seg in segments:
+        target_dir = target_dir / seg
+    target_dir = target_dir / 'Frameworks'
     target_dir.mkdir(parents=True, exist_ok=True)
 
     filename = f"{_slug(name)}.md"
@@ -1053,8 +1090,11 @@ def _write_playbook_note(vault: Path, entry: Dict, pb: Dict) -> Optional[Path]:
     if not title:
         return None
 
-    folder = _route_artefact(entry.get('primary_topics', []), title + ' ' + pb.get('trigger', ''))
-    target_dir = vault / '3.RECURSOS' / 'Domain Knowledge' / folder / 'Playbooks'
+    segments = _route_conversation(entry.get('title', ''), entry.get('primary_topics', []))
+    target_dir = vault / '3.RECURSOS'
+    for seg in segments:
+        target_dir = target_dir / seg
+    target_dir = target_dir / 'Playbooks'
     target_dir.mkdir(parents=True, exist_ok=True)
 
     filename = f"{_slug(title)}.md"
@@ -1093,8 +1133,11 @@ def _write_claim_note(vault: Path, entry: Dict, cl: Dict) -> Optional[Path]:
     if not text or len(text) < 15:
         return None
 
-    folder = _route_artefact(entry.get('primary_topics', []), text + ' ' + cl.get('domain', ''))
-    target_dir = vault / '3.RECURSOS' / 'Domain Knowledge' / folder / 'Claims'
+    segments = _route_conversation(entry.get('title', ''), entry.get('primary_topics', []))
+    target_dir = vault / '3.RECURSOS'
+    for seg in segments:
+        target_dir = target_dir / seg
+    target_dir = target_dir / 'Claims'
     target_dir.mkdir(parents=True, exist_ok=True)
 
     # Claim filenames: first N words of text
@@ -1248,10 +1291,14 @@ def apply_extracts(vault_path: Path, report_path: Optional[Path] = None,
                         name = artefact.get('name') or artefact.get('title') or '(unnamed)'
                     stats[art_type]['written'] += 1
                     if len(name) > 0:
-                        folder_hint = _route_artefact(
-                            entry.get('primary_topics', []),
-                            name
-                        ) if art_type != 'glossary' else 'Glossary'
+                        if art_type == 'glossary':
+                            folder_hint = 'Domain Knowledge/Glossary'
+                        else:
+                            segs = _route_conversation(
+                                entry.get('title', ''),
+                                entry.get('primary_topics', [])
+                            )
+                            folder_hint = '/'.join(segs + [art_type.capitalize() + 's'])
                         print(f"  [DRY] {art_type:10s} → {folder_hint}/{_slug(name, 60)}.md")
                 else:
                     path = writer(vault_path, entry, artefact)
