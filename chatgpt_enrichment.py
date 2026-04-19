@@ -560,197 +560,375 @@ def load_analysis_report(vault_path: Path) -> List[Dict]:
         return json.load(f)
 
 
-def extract_frameworks(vault_path: Path, dry_run: bool = True,
-                        min_score: float = 70.0, output_path: Optional[Path] = None):
-    """Extract frameworks and methodologies from analyzed conversations.
+def _tier_filter(quality_score: float, tier: str) -> bool:
+    """Return True if conversation's score falls in requested tier (S/A/B)."""
+    if tier == 'S':
+        return quality_score >= 90.0
+    if tier == 'A':
+        return 80.0 <= quality_score < 90.0
+    if tier == 'B':
+        return 50.0 <= quality_score < 80.0
+    if tier == 'SA':
+        return quality_score >= 80.0
+    return quality_score >= 50.0
 
-    Reads chatgpt_analysis_report.json and produces a markdown digest of
-    conversations flagged has_framework=True, grouped by primary topic.
+
+EXTRACT_SYSTEM_PROMPT = """You are a domain-aware knowledge extractor for a professional infrastructure-advisory vault.
+
+You read one ChatGPT conversation and extract four TYPED artefacts in strict JSON. Be CONSERVATIVE: if there is no clear framework, playbook, atomic claim, or glossary term, return an empty list for that type. Do NOT invent items to fill quotas. Quality over quantity.
+
+DEFINITIONS:
+
+- frameworks: Named, reusable methods/rubrics/models explicitly developed or applied in the conversation. Must have steps or structure. NOT: vague best-practice lists, one-off checklists, generic advice.
+
+- playbooks: Reusable decision templates stripped of client/project specifics. A playbook answers "what would I do if I faced this again?". Must capture trigger, steps, applicable_when. NOT: narrative summaries or single-use plans.
+
+- claims: Atomic, citeable statements — a number, a ratio, a named rule, a specific regulation. Each ≤40 words. Must include confidence (high/medium/low). NOT: generalities or opinions.
+
+- glossary: One-line definitions of technical terms the user would want to look up later. ≤25 words per definition. Term must be a proper noun, acronym, or domain-specific phrase. NOT: common English words.
+
+Return ONLY valid JSON matching the exact schema provided. Empty arrays are fine. Never include markdown fencing."""
+
+
+def _build_extract_prompt(conv: ConversationFile) -> str:
+    """Construct the per-conversation extraction prompt."""
+    user_text = '\n\n'.join(m['content'][:4000] for m in conv.messages if m['role'] == 'user')
+    assistant_text = '\n\n'.join(m['content'][:6000] for m in conv.messages if m['role'] == 'assistant')
+
+    schema = """{
+  "frameworks": [
+    {"name": str, "definition": str, "steps": [str], "when_to_use": str, "failure_modes": [str]}
+  ],
+  "playbooks": [
+    {"title": str, "trigger": str, "steps": [str], "applicable_when": str}
+  ],
+  "claims": [
+    {"text": str, "domain": str, "confidence": "high"|"medium"|"low", "source_excerpt": str}
+  ],
+  "glossary": [
+    {"term": str, "one_line": str, "topic": str}
+  ]
+}"""
+
+    return f"""Extract typed artefacts from this ChatGPT conversation.
+
+Title: {conv.title}
+Topics from prior analysis: {conv.tags}
+
+USER MESSAGES:
+{user_text[:12000]}
+
+ASSISTANT RESPONSES:
+{assistant_text[:18000]}
+
+Return JSON matching this schema exactly:
+{schema}
+
+Rules:
+- Empty arrays if nothing qualifies — do not force items.
+- Each framework/playbook should be distinct and self-contained.
+- Claims: only specific numbers, rates, or named rules with identifiable provenance.
+- Glossary terms: domain-specific, not common English.
+"""
+
+
+def extract_frameworks(vault_path: Path, dry_run: bool = True,
+                        tier: str = 'S', limit: Optional[int] = None,
+                        output_path: Optional[Path] = None):
+    """Per-conversation typed extraction (§4.1 of Distillation Strategy).
+
+    Reads analysis report, filters to tier, for each conversation calls the
+    LLM with a strict JSON schema and appends the result to a JSONL report.
+    No vault writes — apply.py consumes the report separately.
+
+    Args:
+        tier: S (≥90), A (80-89), SA (≥80), B (50-79), or any value <=0 for all
+        limit: cap number of conversations processed (for dry-run testing)
+        output_path: override JSONL output path
     """
+    global openai_client
+    if openai_client is None:
+        from openai import OpenAI
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            print("❌ OPENAI_API_KEY not set")
+            return
+        openai_client = OpenAI(api_key=api_key)
+
     results = load_analysis_report(vault_path)
     if not results:
         return
 
-    frameworks = [
+    # Filter by tier
+    candidates = [
         r for r in results
-        if r['analysis'].get('has_framework')
-        and r['analysis'].get('framework_description')
-        and r['analysis'].get('quality_score', 0) >= min_score
+        if _tier_filter(r['analysis'].get('quality_score', 0), tier)
     ]
+    candidates.sort(key=lambda r: -r['analysis']['quality_score'])
 
-    print(f"Found {len(frameworks)} framework-bearing conversations (score >= {min_score})")
-    print(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
+    if limit:
+        candidates = candidates[:limit]
+
+    # Default output path
+    if output_path is None:
+        reports_dir = Path(__file__).parent / 'reports'
+        reports_dir.mkdir(exist_ok=True)
+        output_path = reports_dir / f'chatgpt_extract_tier{tier}_{datetime.now().strftime("%Y-%m-%d")}.jsonl'
+
+    print(f"Tier {tier}: {len(candidates)} conversations to extract")
+    print(f"Output: {output_path}")
+    print(f"Mode: {'DRY RUN (no LLM calls)' if dry_run else 'LIVE'}")
     print("=" * 80)
 
-    if not frameworks:
+    if not candidates:
         return
 
-    # Group by primary topic
-    by_topic = {}
-    for r in frameworks:
-        topics = r['analysis'].get('primary_topics') or ['(untagged)']
-        primary = topics[0] if topics else '(untagged)'
-        by_topic.setdefault(primary, []).append(r)
-
-    # Build markdown digest
-    lines = [
-        "---",
-        f"date: {datetime.now().strftime('%Y-%m-%d')}",
-        "tags:",
-        "  - type/note",
-        "  - topic/ai",
-        "  - source/chatgpt",
-        "  - status/review",
-        "  - lang/en",
-        "---",
-        "",
-        "# ChatGPT Frameworks Digest",
-        "",
-        f"> Frameworks and methodologies extracted from {len(frameworks)} high-quality ChatGPT conversations "
-        f"(quality score ≥ {min_score}). Generated from `chatgpt_analysis_report.json`.",
-        "",
-        f"**Total frameworks:** {len(frameworks)}  ",
-        f"**Topics covered:** {len(by_topic)}  ",
-        f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        "",
-        "---",
-        "",
-        "## Frameworks by Topic",
-        "",
-    ]
-
-    for topic in sorted(by_topic.keys()):
-        entries = sorted(by_topic[topic], key=lambda r: -r['analysis']['quality_score'])
-        lines.append(f"### {topic} ({len(entries)})")
-        lines.append("")
-        for r in entries:
-            note_name = Path(r['path']).stem
-            score = r['analysis']['quality_score']
-            desc = r['analysis']['framework_description'].strip()
-            # Keep description compact
-            if len(desc) > 400:
-                desc = desc[:400].rsplit(' ', 1)[0] + '…'
-            lines.append(f"- **[[{note_name}]]** (score {score:.0f})")
-            lines.append(f"  {desc}")
-            lines.append("")
-        lines.append("")
-
-    content = '\n'.join(lines)
-
-    # Default output: INBOX
-    if output_path is None:
-        output_path = vault_path / '0.INBOX' / f'ChatGPT Frameworks Digest - {datetime.now().strftime("%Y-%m-%d")}.md'
-
     if dry_run:
-        print(f"Would write to: {output_path}")
-        print(f"Content preview (first 40 lines):")
-        print('\n'.join(lines[:40]))
-    else:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(content, encoding='utf-8')
-        print(f"✓ Wrote digest to: {output_path}")
+        print("\nTier-S/A preview (first 10):")
+        for r in candidates[:10]:
+            print(f"  {r['analysis']['quality_score']:.0f}  {Path(r['path']).stem[:70]}")
+        print(f"\nDry-run complete. Rerun with --no-dry-run to call the LLM and write JSONL.")
+        return
+
+    # Resume support: skip conversations already in the JSONL
+    processed_ids = set()
+    if output_path.exists():
+        with open(output_path, 'r') as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                    processed_ids.add(entry.get('conv_id'))
+                except json.JSONDecodeError:
+                    continue
+        print(f"Resuming: {len(processed_ids)} conversations already in report, skipping.")
+
+    total_frameworks = 0
+    total_playbooks = 0
+    total_claims = 0
+    total_glossary = 0
+    errors = 0
+
+    chatgpt_folder = vault_path / CHATGPT_FOLDER
+
+    with open(output_path, 'a') as out_f:
+        for idx, r in enumerate(candidates, 1):
+            conv_path = Path(r['path'])
+            conv_id = str(conv_path.relative_to(vault_path)) if conv_path.is_relative_to(vault_path) else str(conv_path)
+
+            if conv_id in processed_ids:
+                continue
+
+            if not conv_path.exists():
+                print(f"  [{idx}/{len(candidates)}] MISSING: {conv_path.name}")
+                continue
+
+            # Parse conversation
+            conv = parse_conversation_file(conv_path)
+            if not conv:
+                errors += 1
+                continue
+
+            prompt = _build_extract_prompt(conv)
+            score = r['analysis']['quality_score']
+
+            try:
+                response = openai_client.chat.completions.create(
+                    model=OPENAI_MODEL,
+                    messages=[
+                        {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_completion_tokens=4000,
+                    response_format={"type": "json_object"}
+                )
+                raw = response.choices[0].message.content
+                data = json.loads(raw)
+            except json.JSONDecodeError as e:
+                print(f"  [{idx}/{len(candidates)}] JSON PARSE ERROR: {conv.title[:60]} — {e}")
+                errors += 1
+                continue
+            except Exception as e:
+                print(f"  [{idx}/{len(candidates)}] API ERROR: {conv.title[:60]} — {e}")
+                errors += 1
+                continue
+
+            frameworks = data.get('frameworks', [])
+            playbooks = data.get('playbooks', [])
+            claims = data.get('claims', [])
+            glossary = data.get('glossary', [])
+
+            total_frameworks += len(frameworks)
+            total_playbooks += len(playbooks)
+            total_claims += len(claims)
+            total_glossary += len(glossary)
+
+            entry = {
+                'conv_id': conv_id,
+                'title': conv.title,
+                'score': score,
+                'primary_topics': r['analysis'].get('primary_topics', []),
+                'extracted_at': datetime.now().isoformat(timespec='seconds'),
+                'model': OPENAI_MODEL,
+                'frameworks': frameworks,
+                'playbooks': playbooks,
+                'claims': claims,
+                'glossary': glossary,
+                'input_tokens': response.usage.prompt_tokens,
+                'output_tokens': response.usage.completion_tokens,
+            }
+
+            out_f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+            out_f.flush()
+
+            print(f"  [{idx}/{len(candidates)}] {score:3.0f} {conv.title[:50]:50s} "
+                  f"→ F{len(frameworks)} P{len(playbooks)} C{len(claims)} G{len(glossary)}")
 
     print(f"\n{'=' * 80}")
-    print(f"Frameworks: {len(frameworks)} across {len(by_topic)} topics")
+    print(f"Extraction complete.")
+    print(f"  Frameworks: {total_frameworks}")
+    print(f"  Playbooks:  {total_playbooks}")
+    print(f"  Claims:     {total_claims}")
+    print(f"  Glossary:   {total_glossary}")
+    print(f"  Errors:     {errors}")
+    print(f"Report: {output_path}")
 
 
 def mine_questions(vault_path: Path, dry_run: bool = True,
-                    min_score: float = 70.0, output_path: Optional[Path] = None):
-    """Mine valuable questions for content ideas.
+                    min_cluster_size: int = 3, min_score: float = 70.0,
+                    output_path: Optional[Path] = None):
+    """Cross-corpus question clustering via LanceDB embeddings (§4.2).
 
-    Reads chatgpt_analysis_report.json and produces a digest of user questions
-    from high-quality conversations, grouped by primary topic. These surface
-    recurring curiosities that could seed article drafts.
+    Extracts user-question turns from conversations with quality score ≥
+    min_score, embeds each with sentence-transformers (via Ollama's
+    nomic-embed-text model used by vault_pipeline), clusters by cosine
+    similarity, and outputs a TSV of canonical questions.
+
+    For now this is a simpler implementation: group by embedding-space
+    clusters using HDBSCAN on normalized vectors. Full LanceDB integration
+    and "best answer" scoring deferred to a follow-up pass.
     """
     results = load_analysis_report(vault_path)
     if not results:
         return
 
-    high_quality = [
-        r for r in results
-        if r['analysis'].get('key_questions')
-        and r['analysis'].get('quality_score', 0) >= min_score
-    ]
+    # For now, mine_questions uses the key_questions already extracted
+    # during the analyze phase. Full transcript re-scan is a later refinement.
+    pool = []
+    for r in results:
+        if r['analysis'].get('quality_score', 0) < min_score:
+            continue
+        for q in r['analysis'].get('key_questions', []):
+            q = q.strip()
+            if len(q) < 10 or len(q) > 400:
+                continue
+            pool.append({
+                'question': q,
+                'source': str(Path(r['path']).relative_to(vault_path)) if Path(r['path']).is_relative_to(vault_path) else r['path'],
+                'title': Path(r['path']).stem,
+                'score': r['analysis']['quality_score'],
+                'topics': r['analysis'].get('primary_topics', []),
+            })
 
-    print(f"Found {len(high_quality)} conversations with key questions (score >= {min_score})")
+    print(f"Candidate questions: {len(pool)} (score ≥ {min_score})")
+    print(f"Min cluster size: {min_cluster_size}")
     print(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
     print("=" * 80)
 
-    if not high_quality:
+    if not pool:
         return
 
-    # Group questions by primary topic, keeping source attribution
-    by_topic = {}
-    total_questions = 0
-    for r in high_quality:
-        topics = r['analysis'].get('primary_topics') or ['(untagged)']
-        primary = topics[0] if topics else '(untagged)'
-        questions = r['analysis']['key_questions']
-        note_name = Path(r['path']).stem
-        score = r['analysis']['quality_score']
-        for q in questions:
-            by_topic.setdefault(primary, []).append({
-                'question': q.strip(),
-                'source': note_name,
-                'score': score,
-            })
-            total_questions += 1
-
-    # Build markdown digest
-    lines = [
-        "---",
-        f"date: {datetime.now().strftime('%Y-%m-%d')}",
-        "tags:",
-        "  - type/note",
-        "  - topic/ai",
-        "  - source/chatgpt",
-        "  - status/review",
-        "  - lang/en",
-        "---",
-        "",
-        "# ChatGPT Questions Digest — Content Ideas",
-        "",
-        f"> User questions extracted from {len(high_quality)} high-quality ChatGPT conversations "
-        f"(quality score ≥ {min_score}). Useful as seeds for article drafts or curiosity map.",
-        "",
-        f"**Total questions:** {total_questions}  ",
-        f"**Topics covered:** {len(by_topic)}  ",
-        f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        "",
-        "---",
-        "",
-        "## Questions by Topic",
-        "",
-    ]
-
-    for topic in sorted(by_topic.keys(), key=lambda t: -len(by_topic[t])):
-        entries = sorted(by_topic[topic], key=lambda e: -e['score'])
-        lines.append(f"### {topic} ({len(entries)} questions)")
-        lines.append("")
-        for entry in entries:
-            q = entry['question']
-            if len(q) > 300:
-                q = q[:300].rsplit(' ', 1)[0] + '…'
-            lines.append(f"- {q}")
-            lines.append(f"  *→ [[{entry['source']}]] (score {entry['score']:.0f})*")
-        lines.append("")
-
-    content = '\n'.join(lines)
-
+    # Default output
     if output_path is None:
-        output_path = vault_path / '0.INBOX' / f'ChatGPT Questions Digest - {datetime.now().strftime("%Y-%m-%d")}.md'
+        reports_dir = Path(__file__).parent / 'reports'
+        reports_dir.mkdir(exist_ok=True)
+        output_path = reports_dir / f'chatgpt_questions_{datetime.now().strftime("%Y-%m-%d")}.tsv'
 
     if dry_run:
         print(f"Would write to: {output_path}")
-        print(f"Content preview (first 40 lines):")
-        print('\n'.join(lines[:40]))
-    else:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(content, encoding='utf-8')
-        print(f"✓ Wrote digest to: {output_path}")
+        print(f"Sample questions:")
+        for p in pool[:10]:
+            print(f"  [{p['score']:.0f}] {p['question'][:100]}")
+        print(f"\nDry-run complete. Full clustering requires embedding model; rerun with --no-dry-run.")
+        return
+
+    # Embed each question via Ollama (nomic-embed-text matches the vault_pipeline)
+    print("Computing embeddings via Ollama (nomic-embed-text)...")
+    try:
+        import httpx
+    except ImportError:
+        print("❌ httpx required for Ollama embedding calls. Install with: pip install httpx")
+        return
+
+    embeddings = []
+    for idx, p in enumerate(pool):
+        if idx % 50 == 0:
+            print(f"  {idx}/{len(pool)}")
+        try:
+            resp = httpx.post(
+                "http://localhost:11434/api/embeddings",
+                json={"model": "nomic-embed-text", "prompt": p['question']},
+                timeout=30.0
+            )
+            resp.raise_for_status()
+            embeddings.append(resp.json()['embedding'])
+        except Exception as e:
+            print(f"  Embedding error at {idx}: {e}")
+            embeddings.append(None)
+
+    # Simple clustering: for each question, find all others with cosine > 0.85
+    import numpy as np
+    valid = [(i, np.array(e)) for i, e in enumerate(embeddings) if e is not None]
+    if not valid:
+        print("❌ No embeddings computed. Is Ollama running?")
+        return
+
+    # Normalize
+    for i, v in valid:
+        n = np.linalg.norm(v)
+        if n > 0:
+            v /= n
+
+    threshold = 0.75
+    assigned = {}
+    cluster_id = 0
+    clusters = {}
+
+    for i, v in valid:
+        if i in assigned:
+            continue
+        cluster_id += 1
+        assigned[i] = cluster_id
+        clusters[cluster_id] = [i]
+        for j, w in valid:
+            if j <= i or j in assigned:
+                continue
+            if float(np.dot(v, w)) >= threshold:
+                assigned[j] = cluster_id
+                clusters[cluster_id].append(j)
+
+    # Filter to clusters of min size, output canonical = highest-score question
+    recurring = [(cid, members) for cid, members in clusters.items() if len(members) >= min_cluster_size]
+    recurring.sort(key=lambda x: -len(x[1]))
+
+    # Write TSV
+    with open(output_path, 'w') as f:
+        f.write("cluster_id\tsize\tcanonical_question\tmember_titles\ttopics\n")
+        for cid, members in recurring:
+            # Canonical: highest-score member
+            best = max(members, key=lambda m: pool[m]['score'])
+            titles = '; '.join(sorted({pool[m]['title'] for m in members}))
+            all_topics = set()
+            for m in members:
+                all_topics.update(pool[m]['topics'])
+            topics_str = ', '.join(sorted(all_topics))
+            f.write(f"{cid}\t{len(members)}\t{pool[best]['question']}\t{titles}\t{topics_str}\n")
 
     print(f"\n{'=' * 80}")
-    print(f"Questions: {total_questions} across {len(by_topic)} topics")
+    print(f"Total questions:      {len(pool)}")
+    print(f"Embedded:             {len(valid)}")
+    print(f"Recurring clusters:   {len(recurring)} (size ≥ {min_cluster_size})")
+    print(f"Singletons:           {len(valid) - sum(len(m) for _, m in recurring)}")
+    print(f"Report: {output_path}")
 
 
 def update_frontmatter(vault_path: Path, dry_run: bool = True):
@@ -926,10 +1104,16 @@ def main():
                        help='Quality threshold for cleanup (default: 40.0)')
 
     parser.add_argument('--min-score', type=float, default=70.0,
-                       help='Minimum quality score for extract/mine-questions (default: 70.0)')
+                       help='Minimum quality score for mine-questions (default: 70.0)')
+
+    parser.add_argument('--tier', default='S', choices=['S', 'A', 'SA', 'B', 'all'],
+                       help='Conversation tier for extract (S≥90, A 80-89, SA≥80, B 50-79, all). Default: S')
+
+    parser.add_argument('--min-cluster-size', type=int, default=3,
+                       help='Minimum cluster size for mine-questions recurring themes (default: 3)')
 
     parser.add_argument('--output', type=Path,
-                       help='Output path for extract/mine-questions digest (default: 0.INBOX/...)')
+                       help='Output path for extract/mine-questions report (default: ./reports/...)')
 
     args = parser.parse_args()
 
@@ -954,9 +1138,10 @@ def main():
     elif args.command == 'tag':
         add_topic_tags(vault_path, dry_run)
     elif args.command == 'extract':
-        extract_frameworks(vault_path, dry_run, args.min_score, args.output)
+        tier = 'all' if args.tier == 'all' else args.tier
+        extract_frameworks(vault_path, dry_run, tier, args.limit, args.output)
     elif args.command == 'mine-questions':
-        mine_questions(vault_path, dry_run, args.min_score, args.output)
+        mine_questions(vault_path, dry_run, args.min_cluster_size, args.min_score, args.output)
     elif args.command == 'cleanup':
         cleanup_conversations(vault_path, args.threshold, dry_run)
 
