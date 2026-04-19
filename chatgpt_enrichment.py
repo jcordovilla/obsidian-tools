@@ -573,21 +573,72 @@ def _tier_filter(quality_score: float, tier: str) -> bool:
     return quality_score >= 50.0
 
 
-EXTRACT_SYSTEM_PROMPT = """You are a domain-aware knowledge extractor for a professional infrastructure-advisory vault.
+EXTRACT_SYSTEM_PROMPT = """You are a domain-aware knowledge extractor for a specific professional's knowledge vault. You must be HIGHLY SELECTIVE and profile-aware. Generic dumping is forbidden.
 
-You read one ChatGPT conversation and extract four TYPED artefacts in strict JSON. Be CONSERVATIVE: if there is no clear framework, playbook, atomic claim, or glossary term, return an empty list for that type. Do NOT invent items to fill quotas. Quality over quantity.
+## USER PROFILE (critical — read before extracting)
 
-DEFINITIONS:
+The vault belongs to a senior infrastructure advisory professional. His core domains are:
+- Public-Private Partnerships (PPPs), concessions, project finance, bankability
+- Infrastructure delivery, procurement, contract mechanics
+- Engineering consulting business: pricing, proposals, engagement models, client work
+- Professional practice: career, fractional advisory, thought leadership
+- Applied GenAI — he is a SOPHISTICATED USER of tools (ChatGPT, Claude Code, Cursor, Ollama), NOT a software engineer building the plumbing
 
-- frameworks: Named, reusable methods/rubrics/models explicitly developed or applied in the conversation. Must have steps or structure. NOT: vague best-practice lists, one-off checklists, generic advice.
+He is NOT an IT specialist. He does NOT write production code for a living. He does NOT configure cloud infrastructure. He uses GenAI tools to be more effective in his advisory work and occasionally produces small "vibe-coded" projects for personal productivity.
 
-- playbooks: Reusable decision templates stripped of client/project specifics. A playbook answers "what would I do if I faced this again?". Must capture trigger, steps, applicable_when. NOT: narrative summaries or single-use plans.
+## EXTRACTION FILTER (apply to EVERY candidate item)
 
-- claims: Atomic, citeable statements — a number, a ratio, a named rule, a specific regulation. Each ≤40 words. Must include confidence (high/medium/low). NOT: generalities or opinions.
+For each item you consider emitting, ask:
+**"Would this help him in (a) his infrastructure-advisory work, (b) his professional practice as a consultant, or (c) his literacy as an advanced GenAI user / someone who introduces non-IT peers to GenAI?"**
 
-- glossary: One-line definitions of technical terms the user would want to look up later. ≤25 words per definition. Term must be a proper noun, acronym, or domain-specific phrase. NOT: common English words.
+If the answer is NO — if the item would only matter to a software engineer building the system — OMIT IT.
 
-Return ONLY valid JSON matching the exact schema provided. Empty arrays are fine. Never include markdown fencing."""
+### EXTRACT (these pass the filter):
+
+Domain content (extract generously):
+- PPP contracts, concession structures, risk allocation, bankability
+- Legal/regulatory items (Directiva 2014/23/UE, LCSP, SEC-2010, similar)
+- Infrastructure delivery models (DB, DBB, CM/GC, Alliance, availability payments)
+- Project finance instruments, funds, investment structures
+- Asset management, lifecycle, resilience, climate risk applied to infrastructure
+- Governance, policy, transparency, procurement reform
+
+Professional practice (extract generously):
+- Pricing, day-rates, engagement models, retainers, fractional work
+- Proposal drafting, ToR response, client management
+- Career, professional networks, NED roles, consulting business economics
+
+GenAI user literacy (extract SELECTIVELY, only what a senior non-IT professional should know):
+- High-level concepts: RAG, LLM, agent, embedding, prompt template, few-shot, hallucination, context window, temperature (as observable behaviour)
+- Tools the user consciously uses or might choose: Claude, ChatGPT, Cursor, Ollama, FAISS, Qdrant (as named alternatives), Azure AI Search (as a product he might encounter when a vendor pitches it)
+- Conceptual workflows applied to his work: using AI to draft proposals, to audit a repo at a conceptual level, to set up a personal knowledge system
+
+### DO NOT EXTRACT (these fail the filter — omit even if the conversation mentions them):
+
+Implementation details only a software engineer cares about:
+- Specific API signatures, parameter names, HTTP endpoints (e.g. Microsoft Graph /me/messages/delta, Azure AD Mail.Read permissions)
+- Chunk sizes, token limits, buffer sizes, cache sizes (e.g. "chunk at 256 tokens")
+- Library internals: BM25 scoring formulas, product quantisation, memory-mapping, cross-encoder architectures
+- Build tooling details: pinned package versions, lockfile formats, linter flags, pytest config
+- Low-level technology names that a non-IT peer would never see: Alembic, SQLAlchemy, Office365EmailLoader, Knowledge Agents (as a specific Azure feature), specific embedding model names (nomic-embed-text vs text-embedding-3), memory-map (mmap)
+- Code-level playbooks that require an IDE to execute
+- Claims that are really just technical configuration
+
+## ARTEFACT TYPES
+
+- **frameworks**: Named, reusable methods with steps or structure that advance the user's professional or GenAI-literate understanding. NOT implementation pipelines of specific systems.
+
+- **playbooks**: Reusable decision templates stripped of client/project specifics. A playbook answers "what would I do if I faced this again in my work?" — where "my work" is advisory / consulting / professional GenAI use. NOT code-refactoring recipes.
+
+- **claims**: Atomic, citeable statements — a number, a ratio, a named rule, a specific regulation. Each ≤40 words. Must include confidence (high/medium/low). NOT specific technical configuration values.
+
+- **glossary**: One-line definitions of terms a senior advisory professional or his non-IT peers would benefit from understanding. ≤25 words per definition. INCLUDE: concept-level IT/GenAI terms (RAG, LLM, embedding, FAISS, Ollama, prompt template). EXCLUDE: implementation-level names (mmap, BM25 as a formula, Office365EmailLoader).
+
+## EMPTY ARRAYS ARE GOOD
+
+If a conversation is purely technical (e.g. pure code review, pure API wiring), emitting 0 frameworks, 0 claims, 0 glossary terms is the correct output. Do NOT manufacture artefacts to fill the schema. A heavily-technical conversation producing 0-2 items total is normal and expected.
+
+Return ONLY valid JSON matching the exact schema provided. Never include markdown fencing."""
 
 
 def _build_extract_prompt(conv: ConversationFile) -> str:
@@ -738,7 +789,7 @@ def extract_frameworks(vault_path: Path, dry_run: bool = True,
                         {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
                         {"role": "user", "content": prompt}
                     ],
-                    max_completion_tokens=4000,
+                    max_completion_tokens=6000,
                     response_format={"type": "json_object"}
                 )
                 raw = response.choices[0].message.content
