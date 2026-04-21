@@ -62,6 +62,12 @@ python <script>.py --vault /path/to/vault --no-dry-run # Execute
 |--------|-------------|
 | `validate_agents.py` | Validate Claude Code agents/skills YAML |
 
+### Session Analysis
+
+| Script | Description |
+|--------|-------------|
+| `extract_session_prompts.py` | Extract user-typed prompts from Claude Code session JSONL logs (filters tool results, system reminders, slash-command echoes); chronologically sorted, with substantive-prompt subset |
+
 ### Utilities
 
 | Script | Description |
@@ -112,6 +118,37 @@ python validate_agents.py                    # Validate default vault
 python validate_agents.py --vault /path      # Custom vault
 python validate_agents.py --agents-only      # Skip skills
 ```
+
+### extract_session_prompts.py
+
+Extract user-typed prompts from Claude Code session `.jsonl` logs. Useful for self-reflection exercises (e.g. "what have I been asking Claude over the past month?").
+
+```bash
+# Default: JC vault project, output to /tmp/jc_prompts/
+python extract_session_prompts.py
+
+# List available projects under ~/.claude/projects/
+python extract_session_prompts.py --list
+
+# Different project, custom output, higher substantive-prompt threshold
+python extract_session_prompts.py \
+  --project -Users-jose-mylab-paco \
+  --output ~/Desktop/paco_prompts \
+  --threshold 200
+
+# Date-filtered (UTC)
+python extract_session_prompts.py --since 2026-04-01 --until 2026-04-19
+```
+
+**Outputs** (in the chosen output directory):
+
+- `all_prompts.jsonl` — every user message that survived the noise filter, one JSON line per prompt with `{ts, sid, len, text}`
+- `substantive_prompts.jsonl` — same shape, filtered to prompts ≥ `--threshold` chars (default 80)
+- `substantive_prompts.txt` — human-readable plain text, separator-delimited, chronological
+
+**Filters out:** tool results, `<system-reminder>`, `<command-name>` / `<local-command-*>`, `<bash-input/stdout/stderr>`, `[Request interrupted ...]`, `Caveat:`, session continuation markers, "Tool loaded.".
+
+**Stats printed to stdout:** total prompts, total characters, length distribution, prompts per ISO week, substantive count.
 
 ### delete_files_from_md.py
 

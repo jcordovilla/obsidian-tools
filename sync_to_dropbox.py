@@ -12,7 +12,9 @@ Uses dry-run mode by default for safety.
 
 import argparse
 import hashlib
+import os
 import shutil
+import stat
 from pathlib import Path
 from typing import Dict, List, Tuple, Set
 from dataclasses import dataclass
@@ -96,6 +98,15 @@ class VaultSync:
 
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
+            # Dropbox (and git) can mark backed-up files read-only, which makes
+            # shutil.copy2 fail with "Permission denied". If the destination
+            # exists and is not writable by the owner, grant write permission
+            # before overwriting so the sync isn't silently blocked.
+            if dest.exists() and not os.access(dest, os.W_OK):
+                try:
+                    dest.chmod(dest.stat().st_mode | stat.S_IWUSR)
+                except OSError as chmod_err:
+                    print(f"  Warning: could not chmod {dest}: {chmod_err}")
             shutil.copy2(source, dest)
             return True
         except Exception as e:

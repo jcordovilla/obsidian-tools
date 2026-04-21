@@ -665,6 +665,15 @@ Ask yourself, honestly, for each candidate:
 
 4. For glossary: "Would a senior non-IT professional encounter this term in a vendor pitch, a FT/HBR article, or an executive conversation about AI? Or does it only come up when writing code?" The former passes.
 
+## CONTENT QUALITY FLOOR
+
+Before emitting any framework or playbook, verify:
+- **Frameworks must have at least 3 concrete steps** with real content. A framework with 1-2 vague steps is not a framework — omit it.
+- **Playbooks must have at least 4 concrete, reusable steps** where each step is an action a professional could take. A playbook with 2-3 abstract bullets is not a playbook — omit it.
+- **Playbooks starting with "Draft a...", "Prepare a...", "Structure a...", "Explain what..."** are usually paraphrases of generic advice. Emit only if the steps genuinely capture a non-obvious method.
+
+Vapid content is worse than empty arrays. It looks like work while being noise.
+
 ## EMPTY ARRAYS ARE THE CORRECT ANSWER FOR CODE CONVERSATIONS
 
 For a pure code-review or debug conversation, 0 frameworks + 0 claims + 1 playbook + 3 glossary terms is a GOOD result. Do NOT manufacture items to "balance" the output.
@@ -753,6 +762,16 @@ def extract_frameworks(vault_path: Path, dry_run: bool = True,
         r for r in results
         if _tier_filter(r['analysis'].get('quality_score', 0), tier)
     ]
+    # Filter out conversations explicitly excluded from distillation
+    # (personal code experiments, off-topic). Saves LLM calls.
+    pre_skip = len(candidates)
+    candidates = [
+        r for r in candidates
+        if not _should_skip(r.get('title', ''), r['analysis'].get('primary_topics', []))
+    ]
+    skipped = pre_skip - len(candidates)
+    if skipped:
+        print(f"Skipped {skipped} conversations matching SKIP_CONVERSATION_PATTERNS")
     candidates.sort(key=lambda r: -r['analysis']['quality_score'])
 
     if limit:
@@ -1024,52 +1043,197 @@ def mine_questions(vault_path: Path, dry_run: bool = True,
 # APPLY: gated write from extract JSONL (§4.3)
 # ============================================================================
 
+# Conversations whose entire content is skipped — no artefacts written.
+# These are personal tooling/coding experiments (user archive: raw chat only),
+# and off-topic personal content (music, health, philosophy).
+SKIP_CONVERSATION_PATTERNS = [
+    # Personal code / tooling projects (cluster 7 — archive raw, no distillation)
+    'discord bot', 'discord-bot', 'discord.py', 'bot permission', 'bot invitation',
+    'bot accept invitation', 'sesh bot', 'discord event management',
+    'network architect guidance',
+    'custom gpt data integration', 'gpt instruction design',
+    'situational contract advice gpt', 'specialized gpt design',
+    'pepe app', 'agent evaluation', 'test-prompt design',
+    'fixing duplicate detection', 'duplicate detection',
+    'dev env recommendations', 'python development environment',
+    'vs code configuration', 'deshacer cambios en git', 'restore vs reset',
+    'git restore', 'git reset',
+    'beta functionality design',
+    # Personal productivity tools / user-side coding trivia
+    'outlook obsidian', 'outlook-obsidian', 'calendar integration',
+    'hoja de gastos', 'expense automation', 'expense-automation',
+    'extraer correos', 'outlook email extraction',
+    'mejoras para mini-app', 'credential management',
+    'consolidate enex', 'enex attachments', 'attachments consolidation',
+    'm4a chunk', 'audio chunking', 'ffmpeg', 'pydub',
+    'selenium', 'xpath', 'web scraping',
+    'parse base64', 'base64 as xml', 'base64 xml',
+    'unicode character warning', 'unicode normalization',
+    'despliegue en nube', 'cloud deployment', 'kubernetes',
+    'accessing ted api', 'ted api access', 'python api integration',
+    'conexión api ted', 'conexion api ted',
+    # iPhone / Siri / voice-capture tooling
+    'siri', 'iphone-based', 'iphone approval', 'driving notes',
+    'voz en obsidian', 'voice-note capture', 'capture driving',
+    # Meta-vault / Obsidian personal-use
+    'obsidian notes for querying', 'structure obsidian notes',
+    'classify a note into projects', 'para method routing',
+    'prepare obsidian notes for ai',
+    # Personal finance / domestic
+    'electricity contract', 'electricity supplier', 'solar surplus',
+    # Personal social-media tooling
+    'ai-curated linkedin', 'manual approval loop for ai',
+    'scheduled external workflow', 'discord poll',
+    # IDE / dev-environment tooling
+    'continue in vs code', 'github branch rulesets',
+    'pull-request approval',
+    # Inspection/diagnosis one-liners
+    'diagnose and stop', 'streamlit background process',
+    'inspect a json file',
+    # Personal / off-topic (cluster 8 — out of pipeline)
+    'basement concert', 'live sound setup', 'microphone placement',
+    'recording workflow', 'concert sound setup',
+    'hidradenitis', 'biologic and novel',
+    'apología de sócrates', 'apología sócrates', 'apologia sócrates',
+    'motivos del juicio',
+    'diferencias entre evangelios', 'gospels', 'biblical theology',
+    'perfil musical', 'banda versiones', 'musical profiling',
+    'repertoire curation',
+]
+
+
+def _should_skip(title: str, primary_topics: List[str]) -> bool:
+    """Return True if the conversation should produce zero distilled artefacts."""
+    haystack = ' '.join([title] + list(primary_topics)).lower()
+    return any(p in haystack for p in SKIP_CONVERSATION_PATTERNS)
+
+
 # Conversation → target area routing (heuristic, conversation-level).
 # Each rule: (list of phrase patterns, target path segments from 3.RECURSOS/).
 # Order matters: first matching rule wins. Evaluated against conversation
 # title + primary_topics concatenated (lowercase).
 ROUTING_RULES = [
-    # Career, consulting business, rate-setting — goes to Professional Dev
+    # Career, consulting business, pricing, strategy — Professional Dev
     (['career', 'engagement model', 'consulting rates', 'consulting business',
       'freelance', 'freelancing', 'fractional', 'non-executive director',
       ' ned ', 'professional network', 'pricing strategy', 'pricing -',
-      'transición', 'cambio profesional', 'day rate', 'billable'],
+      'transición', 'cambio profesional', 'day rate', 'billable',
+      # Business strategy / consulting market
+      'strategy principle', 'strategic case', 'kernel in 3', 'kernel strategy',
+      'market sizing', 'market intelligence', 'business strategy',
+      'consulting services', 'consulting scope', 'engineering consulting',
+      'engineering firm', 'valuing engineering', 'sales & marketing',
+      'sales enablement', 'marketing enablement', 'business development',
+      'valuing data',
+      # CV, executive productivity, personal fiscal
+      'cv summarization', 'professional branding',
+      'executive productivity', 'delegation and automation',
+      'asesoría fiscal', 'asesoria fiscal', 'fatca', 'w-8ben', 'w8ben',
+      'international tax',
+      # Firm-level financial analysis (TYPSA etc.)
+      'salud financiera', 'industry benchmarking',
+      'engineering consultancy sector'],
      ['Professional Dev']),
 
-    # PPPs, concessions, project finance — PPPs folder
+    # PPPs, concessions, project finance, engineering contracts — PPPs folder
     (['ppp', 'p3 ', 'concession', 'concesion', 'project finance',
       'bankability', 'availability payment', 'spv', 'dbfo', 'dbfm',
       'offtake', 'psc ', 'value for money', 'vfm ', 'shadow toll',
-      'riesgo operacional', 'equilibrio económico'],
+      'riesgo operacional', 'equilibrio económico',
+      # G2G as PPP variant
+      'g2g ', 'government-to-government', 'government to government',
+      'pago por disponibilidad',
+      # Engineering contracts, procurement, RFP / OE / EPC
+      ' epc', 'epc vs', 'epc commercial', 'epc contract', 'design & build',
+      'design and build',
+      "owner's engineer", 'owner engineer', 'oe roles', 'oe commercial',
+      'oe proposal',
+      'construction contracts', 'comparison of construction contracts',
+      'project 13', 'nec4', 'nec 4 ecc', 'nec4 ecc',
+      'liability limitation', 'ie report liability',
+      'work packages', 'wp summary',
+      'tender', 'pliego', 'rfp ', 'rfp/tor', ' tor ', 'tor summary',
+      'rfp summary', 'rfp scope', 'scope summary',
+      'procurement methods', 'procurement compliance', 'public procurement',
+      'rfp / procurement',
+      'asociaciones público-privadas', 'asociaciones publico-privadas',
+      'app bid', 'asesoría consultoría app', 'asesoria consultoria app',
+      'project tender', 'construction management',
+      'concurso desalación', 'concurso desalacion', 'desalination',
+      'proposal pricing', 'proposal optimization',
+      'contractual risk mitigation', 'packaging and bundling',
+      'services procurement'],
      ['Domain Knowledge', 'PPPs']),
 
-    # AI/LLM/RAG engineering — Digital Transformation
+    # AI / LLM / agentic / asset mgmt / digital twin / GIS → Digital Transformation
+    # User rule: asset management ALWAYS goes to Digital Transformation.
     (['rag', 'llm', 'agentic', 'prompt engineering', 'prompt optimization',
       'prompt optimisation', 'embedding', 'vector store', 'vector database',
       'gpt-', 'claude ', 'openai', 'ollama', 'faiss', 'langchain', 'langgraph',
       'ai architecture', 'ai assistant', 'ai agent', 'ai solution',
-      'generative ai', 'fine-tun', 'retrieval-augmented'],
+      'generative ai', 'fine-tun', 'retrieval-augmented',
+      # Asset management applied to infrastructure
+      'asset management', 'asset lifecycle', 'asset maintenance',
+      'maintenance strategy', 'road asset management', 'resilient road asset',
+      'rram', 'ssatp', 'afera', 'agepar', 'asset monitoring',
+      'predictive maintenance', 'infrastructure monitoring',
+      'infrastructure asset management',
+      # GIS / geospatial / satellite / applied AI in civil engineering
+      'geoai', 'qgis', 'satellite data', 'geospatial', 'gis',
+      'satellite remote sensing', 'remote sensing',
+      'ai in civil engineering', 'ai disruption in civil',
+      'ai in infrastructure', 'ia generativa', 'inteligencia artificial',
+      # Digital twin / digitalización / Industry 4.0
+      'digital twin', 'gemelo digital',
+      'digitalización de infraestructuras', 'digitalización', 'digitalizacion',
+      'infraestructuras 4.0', 'industry 4.0',
+      # Data architecture, workflows, AI impact
+      'data governance', 'data valuation', 'data integration',
+      'data architecture', 'modern data stack',
+      'workflow integration', 'ai workflow',
+      'construction tech', 'ai-based risk',
+      'ai trends', 'ai adoption', 'ai impact', 'ai growth',
+      'rail digitization', 'rail automation',
+      # AI/ML foundations (for user literacy)
+      'transformers', 'self-attention', 'deep learning', 'meta-learning'],
      ['Domain Knowledge', 'Digital Transformation']),
-
-    # Code/software practice — Engineering subfolder (not Domain Knowledge)
-    (['code audit', 'repository audit', 'code review', 'dev tooling',
-      'software architecture', 'refactor', 'test coverage', 'ci/cd',
-      'python package', 'static analysis'],
-     ['Engineering']),
 
     # Risk, resilience, climate
     (['risk management', 'climate risk', 'resilience', 'disaster risk',
-      'asset exposure', 'vulnerability', 'hazard', 'insurance'],
+      'asset exposure', 'vulnerability', 'hazard', 'insurance',
+      'cascading risk'],
      ['Domain Knowledge', 'Risk Management']),
 
-    # Policy, regulation, governance
+    # Policy, regulation, governance, ITS, water governance, admin reform
     (['policy', 'regulation', 'regulatory', 'governance', 'public sector reform',
-      'legal framework', 'lcsp', 'directive', 'sector público', 'transparency'],
+      'legal framework', 'lcsp', 'directive', 'sector público', 'transparency',
+      'real decreto', 'sistemas inteligentes de transporte',
+      'intelligent transport systems', 'water governance', 'water policy',
+      'road funds', 'road maintenance funds',
+      'análisis jurídico', 'concesión administrativa',
+      # Public administration reform
+      'public administration reform', 'civil service reform',
+      "reforma de l'administració", 'reforma administración',
+      'reforma administracion', 'administración pública', 'administracion publica'],
      ['Domain Knowledge', 'Infrastructure Policy']),
 
-    # Investment, funds, bonds, financing instruments
+    # Investment, funds, bonds, financing, cost estimation, market analysis
     (['infrastructure investment', 'infrastructure fund', 'investment fund',
-      'green bond', 'infrastructure bond', 'pension fund', 'blended finance'],
+      'green bond', 'infrastructure bond', 'pension fund', 'blended finance',
+      'infrastructure financing', 'urban rail financing', 'transport financing',
+      'rail financing', 'water financing', 'transit financing', 'financing model',
+      'financing models', 'flood financing', 'urban rail', 'rail concession',
+      'financial model', 'financial modeling',
+      # Investment evaluation, road/metro planning
+      'road investment evaluation', 'road funding analysis', 'road funding',
+      'mrt financing', 'mrt management', 'metro planning', 'metro sevilla',
+      'metro línea', 'línea 2',
+      # Cost estimation / market analysis
+      'soft costs', 'transit cost estimation', 'as-built cost analysis',
+      'road works market', 'road construction market',
+      'industrial master planning', 'investor targeting',
+      'urban development planning', 'land value capture',
+      'capex', ' opex'],
      ['Domain Knowledge', 'Infrastructure Investment']),
 
     # Sustainability, ESG, green
@@ -1217,9 +1381,15 @@ def _write_playbook_note(vault: Path, entry: Dict, pb: Dict) -> Optional[Path]:
 
 
 def _write_claim_note(vault: Path, entry: Dict, cl: Dict) -> Optional[Path]:
-    """Emit a Claim Card."""
+    """Emit a Claim Card. Only high-confidence claims are written."""
     text = cl.get('text', '').strip()
     if not text or len(text) < 15:
+        return None
+
+    # Policy: discard medium and low confidence outright.
+    # Rationale: signal-to-noise for a citation database.
+    confidence = (cl.get('confidence') or '').lower().strip()
+    if confidence != 'high':
         return None
 
     segments = _route_conversation(entry.get('title', ''), entry.get('primary_topics', []))
@@ -1353,6 +1523,16 @@ def apply_extracts(vault_path: Path, report_path: Optional[Path] = None,
 
     if limit:
         entries = entries[:limit]
+
+    # Filter out skipped-pattern conversations (in case the JSONL was
+    # produced before the skip patterns were defined)
+    pre_skip = len(entries)
+    entries = [
+        e for e in entries
+        if not _should_skip(e.get('title', ''), e.get('primary_topics', []))
+    ]
+    if pre_skip != len(entries):
+        print(f"Skipped {pre_skip - len(entries)} conversations matching SKIP_CONVERSATION_PATTERNS")
 
     print(f"Loaded {len(entries)} conversation entries.")
 
