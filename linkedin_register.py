@@ -135,33 +135,35 @@ def cmd_sync(args) -> None:
     if not args.shares.exists():
         raise SystemExit(f"Shares file not found: {args.shares}")
     canon = load_canon(args.json)
+    before_keys = set(canon)
     rows = list(csv.DictReader(args.shares.open(encoding="utf-8-sig", newline="")))
-    seen, new, updated = set(), 0, 0
+    seen, dup_rows = set(), 0
     for row in rows:
         raw = pick(row, "ShareCommentary", "Commentary", "Text")
         url = pick(row, "ShareLink", "Share Link", "Url", "URL")
         if not raw or not url:
             continue
+        if url in seen:
+            dup_rows += 1
         seen.add(url)
         cleaned = clean_text(raw)
         kind = classify(url, pick(row, "SharedUrl", "Shared Url"), cleaned)
         date = norm_date(pick(row, "Date", "Created Date"))
         if url in canon:
-            e = canon[url]
-            e.update(date=date, text=cleaned, kind=kind)  # manual fields untouched
-            updated += 1
+            canon[url].update(date=date, text=cleaned, kind=kind)  # manual fields untouched
         else:
             canon[url] = {
                 "url": url, "date": date, "kind": kind, "lang": guess_lang(cleaned),
                 "text": cleaned, "theme": "", "engagement": "", "selected": kind == "authored",
             }
-            new += 1
-    orphans = [u for u in canon if u not in seen]
+    new = len(seen - before_keys)
+    updated = len(seen & before_keys)
+    orphans = [u for u in before_keys if u not in seen]
 
     from collections import Counter
     kinds = Counter(e["kind"] for e in canon.values())
     selected = sum(1 for e in canon.values() if e.get("selected"))
-    print(f"Export rows with commentary+URL: {len(seen)}")
+    print(f"Export: {len(seen)} unique posts with commentary+URL ({dup_rows} duplicate rows collapsed)")
     print(f"Canon: {len(canon)} posts ({new} new, {updated} updated, {len(orphans)} not in this export)")
     print(f"By kind: {dict(kinds)} | selected for vault: {selected}")
     if orphans:
@@ -213,7 +215,8 @@ def cmd_pull(args) -> None:
             e["theme"], e["engagement"] = theme, eng
     print(f"Manual fields changed in the note since last pull: {len(changed)}")
     for url, ot, nt, oe, ne in changed[:30]:
-        print(f"  {url.split(':')[-1][:18]:18}  theme '{ot}'->'{nt}'  eng '{oe}'->'{ne}'")
+        sid = (re.search(r"(\d{6,})", url) or re.search(r"([^/]+)$", url)).group(1)[-18:]
+        print(f"  {sid:18}  theme '{ot}'->'{nt}'  eng '{oe}'->'{ne}'")
     if len(changed) > 30:
         print(f"  ... and {len(changed) - 30} more")
     if not changed:
@@ -250,24 +253,26 @@ def cmd_rank(args) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--json", type=Path, default=JSON_CANON, help="JSON canon path")
-    ap.add_argument("--register", type=Path, default=REGISTER, help="Vault register note")
+    # Shared options, accepted after the subcommand (e.g. `pull --json X --register Y`).
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", type=Path, default=JSON_CANON, help="JSON canon path")
+    common.add_argument("--register", type=Path, default=REGISTER, help="Vault register note")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    sp = sub.add_parser("sync", help="Update JSON canon from a LinkedIn data export")
+    sp = sub.add_parser("sync", parents=[common], help="Update JSON canon from a LinkedIn data export")
     sp.add_argument("--shares", required=True, type=Path, help="Path to Shares.csv")
     sp.add_argument("--no-dry-run", action="store_true")
     sp.set_defaults(func=cmd_sync)
 
-    sp = sub.add_parser("render", help="Render authored selection into the vault note")
+    sp = sub.add_parser("render", parents=[common], help="Render authored selection into the vault note")
     sp.add_argument("--no-dry-run", action="store_true")
     sp.set_defaults(func=cmd_render)
 
-    sp = sub.add_parser("pull", help="Read manual theme/engagement from the note into the canon")
+    sp = sub.add_parser("pull", parents=[common], help="Read manual theme/engagement from the note into the canon")
     sp.add_argument("--no-dry-run", action="store_true")
     sp.set_defaults(func=cmd_pull)
 
-    sp = sub.add_parser("rank", help="List selected posts by engagement")
+    sp = sub.add_parser("rank", parents=[common], help="List selected posts by engagement")
     sp.add_argument("n", nargs="?", type=int, default=20)
     sp.set_defaults(func=cmd_rank)
 
