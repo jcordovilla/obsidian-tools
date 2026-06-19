@@ -122,11 +122,17 @@ def structured_section(content: str) -> str:
     return content.split("## Structured entries", 1)[-1].split(LEGACY_HEADING, 1)[0]
 
 
+def escape_hashtags(text: str) -> str:
+    """Wrap inline #hashtags in backticks so Obsidian does not count them as
+    vault tags. The hashtag text stays visible and copy-pasteable for LinkedIn."""
+    return re.sub(r'(?<![\w`])#(?=[\w/-]*[^\W\d_])([\w/-]+)', r'`#\1`', text)
+
+
 def render_entry(e: dict) -> str:
     lang = e.get("lang") or guess_lang(e["text"])
     link = f"[post]({e['url']})" if e.get("url") else "[post](unknown-url)"
     return (f"### {e['date']} · {lang} · {link}\n"
-            f"theme: {e.get('theme', '')}\nengagement: {e.get('engagement', '')}\n\n{e['text']}\n")
+            f"theme: {e.get('theme', '')}\nengagement: {e.get('engagement', '')}\n\n{escape_hashtags(e['text'])}\n")
 
 
 # ---- commands -------------------------------------------------------------
