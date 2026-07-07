@@ -34,6 +34,11 @@ except ImportError:
     sys.exit(1)
 
 from obsidian_utils import validate_vault_path
+from docx_format import (
+    remove_empty_paragraphs,
+    normalize_tables,
+    disable_heading_autonumber,
+)
 
 
 # =============================================================================
@@ -146,7 +151,8 @@ class MarkdownToDocxExporter:
 
     def __init__(self, note_path, template_path, output_path, vault_path,
                  dry_run=True, style_map_overrides=None,
-                 no_title_promotion=False):
+                 no_title_promotion=False, sanitize=True,
+                 keep_heading_numbers=False):
         self.note_path = Path(note_path) if note_path else None
         self.template_path = Path(template_path)
         self.output_path = Path(output_path) if output_path else None
@@ -154,6 +160,12 @@ class MarkdownToDocxExporter:
         self.dry_run = dry_run
         self.doc = None
         self.no_title_promotion = no_title_promotion
+        # Clean-by-default: drop empty paragraphs and give tables a full-width
+        # layout. Prose exports also drop inherited heading auto-numbering
+        # (the template's numbered headings are wrong for free-form prose),
+        # unless the caller opts to keep them.
+        self.sanitize = sanitize
+        self.keep_heading_numbers = keep_heading_numbers
         self._title_rendered = False  # tracks whether first H1 has been rendered
 
         self.style_map = dict(self.DEFAULT_STYLE_MAP)
@@ -708,6 +720,13 @@ class MarkdownToDocxExporter:
         for token in ast_tokens:
             self.render_block(token)
 
+        # Clean-by-default sanitation pass
+        if self.sanitize:
+            if not self.keep_heading_numbers:
+                disable_heading_autonumber(self.doc)
+            remove_empty_paragraphs(self.doc)
+            normalize_tables(self.doc)
+
         # Save
         self.doc.save(str(self.output_path))
         print(f'Exported: {self.output_path}')
@@ -817,6 +836,10 @@ Examples:
                         help='List all styles in the template and exit')
     parser.add_argument('--style-map', type=Path,
                         help='JSON file mapping markdown elements to template style names')
+    parser.add_argument('--keep-heading-numbers', action='store_true',
+                        help='Keep the template\'s heading auto-numbering (default: strip it for prose)')
+    parser.add_argument('--no-sanitize', action='store_true',
+                        help='Disable the clean-up pass (empty-paragraph removal, table normalisation)')
     parser.add_argument('--no-title-promotion', action='store_true',
                         help='Disable title promotion (default: first H1 becomes Title, '
                              'remaining headings promote one level)')
@@ -869,6 +892,8 @@ Examples:
         dry_run=not args.no_dry_run,
         style_map_overrides=style_overrides,
         no_title_promotion=args.no_title_promotion,
+        sanitize=not args.no_sanitize,
+        keep_heading_numbers=args.keep_heading_numbers,
     )
     return exporter.run()
 

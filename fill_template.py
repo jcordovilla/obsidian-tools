@@ -24,6 +24,12 @@ except ImportError:
     print("Error: python-docx not installed. Install with: pip install python-docx")
     sys.exit(1)
 
+from docx_format import (
+    strip_leading_number,
+    remove_empty_paragraphs,
+    normalize_tables,
+)
+
 try:
     import yaml
 except ImportError:
@@ -192,7 +198,9 @@ def _fill_rram(doc, data, dry_run=True):
     for slot_idx, slot in enumerate(_RRAM['agenda']):
         if slot_idx < len(agenda):
             item = agenda[slot_idx]
-            title = item['title']
+            # Strip any manual "N." so it does not double up with Word's
+            # heading auto-numbering.
+            title = strip_leading_number(item['title'])
             body_parts = item.get('body', [])
             if isinstance(body_parts, str):
                 body_parts = [body_parts]
@@ -204,9 +212,10 @@ def _fill_rram(doc, data, dry_run=True):
             if not dry_run:
                 _set_paragraph_text(paras[slot['heading']], title)
                 _set_paragraph_text(paras[slot['body']], body)
-                # Clear extra paragraph slots (bullet placeholders)
+                # Remove the extra bullet placeholder paragraphs outright so
+                # they do not leave empty bullets behind.
                 for idx in slot.get('extra', []):
-                    _set_paragraph_text(paras[idx], '')
+                    to_remove.append(paras[idx])
         else:
             report.append(f"  (slot {slot_idx + 1} unused)")
             to_remove.append(paras[slot['heading']])
@@ -224,7 +233,7 @@ def _fill_rram(doc, data, dry_run=True):
             if slot_idx < len(next_steps):
                 _set_paragraph_text(paras[p_idx], next_steps[slot_idx])
             else:
-                _set_paragraph_text(paras[p_idx], '')
+                to_remove.append(paras[p_idx])
 
     # 5. Actions table
     actions = data.get('actions', [])
@@ -241,6 +250,11 @@ def _fill_rram(doc, data, dry_run=True):
     if not dry_run:
         for para in to_remove:
             _remove_paragraph(para)
+        # 7. Sanitation pass: drop any remaining empty paragraphs and give the
+        # participants/actions tables a full-width, proportional, non-splitting
+        # layout. Keeps output clean without a manual post-process.
+        remove_empty_paragraphs(doc)
+        normalize_tables(doc)
 
     return report
 
