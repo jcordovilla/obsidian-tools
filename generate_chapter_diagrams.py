@@ -29,6 +29,31 @@ from pathlib import Path
 from typing import Optional
 
 
+
+
+def _keychain_secret(label: str) -> str | None:
+    """Read a secret from the macOS Keychain: service jc-secrets/<label>, account $USER.
+
+    Keychain is the single source of truth for credentials (global CLAUDE.md).
+    """
+    try:
+        r = subprocess.run(
+            ["security", "find-generic-password",
+             "-a", os.environ.get("USER", ""),
+             "-s", f"jc-secrets/{label}", "-w"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return r.stdout.strip() or None
+    except Exception:
+        return None
+
+
+# Populate GOOGLE_API_KEY from the Keychain if the environment does not carry it,
+# so every os.environ.get("GOOGLE_API_KEY") below keeps working unchanged.
+if not os.environ.get("GOOGLE_API_KEY"):
+    _k = _keychain_secret("google-ai")
+    if _k:
+        os.environ["GOOGLE_API_KEY"] = _k
 class ChapterDiagramGenerator:
     """Generate AI diagrams for book chapter notes."""
 
