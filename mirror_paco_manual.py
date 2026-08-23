@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Mirror the PACO Manual chapters into the vault as read-only notes.
 
-Master: ~/project-docs/PACO Manual/*.qmd (Quarto book). Mirror:
+Master: ~/mylab/paco-manual/*.qmd (git repo). Mirror:
 ~/obsidian/JC/1.PROYECTOS/PACO/Manual/ as Obsidian notes, one-way.
 Run after each render. Converts Quarto callouts to Obsidian callouts,
 strips the enabler-mark spans to plain glyphs, and rewrites figures to
@@ -14,14 +14,15 @@ import shutil
 from datetime import date
 from pathlib import Path
 
-MASTER = Path.home() / "project-docs/PACO Manual"
+MASTER = Path.home() / "mylab/paco-manual"
 MIRROR = Path.home() / "obsidian/JC/1.PROYECTOS/PACO/Manual"
 FIGS = MIRROR / "figures"
 
-TITLES = {"index": "Foreword"}
+TITLES = {"index": "Cover"}
+TITLES_ES = {"index": "Portada"}
 
 
-def convert(text: str) -> str:
+def convert(text: str, notes: dict) -> str:
     # Quarto callouts -> Obsidian callouts
     def callout(m):
         kind = m.group(1)
@@ -29,6 +30,14 @@ def convert(text: str) -> str:
         lines = [f"> [!{kind}]"] + [f"> {l}" if l.strip() else ">" for l in body.split("\n")]
         return "\n".join(lines) + "\n"
     text = re.sub(r"::: \{\.callout-(\w+)[^\n]*\}\n(.*?)\n:::\n", callout, text, flags=re.S)
+    # Quarto fence attributes -> plain fences for Obsidian
+    text = text.replace("```{.text .sourceCode}", "```text")
+    # html-only blocks (cover card grid) dropped; print-only blocks unwrapped
+    text = re.sub(r"::: \{\.content-visible when-format=\"html\"\}\n.*?\n:::\n:::\n", "", text, flags=re.S)
+    text = re.sub(r"::: \{\.content-visible unless-format=\"html\"\}\n(.*?)\n:::\n", r"\1\n", text, flags=re.S)
+    text = re.sub(r"::: \{\.cover-promise\}\n(.*?)\n:::\n", r"> \1\n", text, flags=re.S)
+    # case labels -> bold
+    text = re.sub(r"^(You say|You get|Why this works):", r"**\1:**", text, flags=re.M)
     # enabler mark spans -> plain glyph
     text = re.sub(r"\[([^\]]{1,3})\]\{\.en\d\}", r"\1", text)
     # figures -> wikilinks with caption
@@ -36,6 +45,11 @@ def convert(text: str) -> str:
         cap, fname = m.group(1), Path(m.group(2)).name
         return f"![[{fname}]]\n*{cap}*"
     text = re.sub(r"!\[([^\]]*)\]\(figures/([^)]+)\)\{[^}]*\}", fig, text)
+    # chapter links -> wikilinks
+    def link(mm):
+        label, stem = mm.group(1), mm.group(2)
+        return f"[[{notes[stem][:-3]}|{label}]]" if stem in notes else mm.group(0)
+    text = re.sub(r"\[([^\]]+)\]\((\d\d-[a-z-]+)\.(?:qmd|html)\)", link, text)
     return text
 
 
@@ -44,35 +58,61 @@ def main():
     FIGS.mkdir(exist_ok=True)
     for png in (MASTER / "figures").glob("*.png"):
         shutil.copy2(png, FIGS / png.name)
+    for old in FIGS.glob("*.png"):
+        if not (MASTER / "figures" / old.name).exists():
+            old.unlink()
     written = 0
+    notes = {}
     for qmd in sorted(MASTER.glob("*.qmd")):
         stem = qmd.stem
-        body = qmd.read_text()
-        m = re.match(r"# (.+)\n", body)
-        title = m.group(1) if m else stem
-        title = re.sub(r"\[([^\]]{1,3})\]\{\.en\d\}", r"\1", title)
-        num = "00" if stem == "index" else stem.split("-")[0]
-        label = TITLES.get(stem, title)
-        safe = re.sub(r'[\\/:*?"<>|]', "", label)
+        body = re.sub(r"\A---\n.*?\n---\n\n?", "", qmd.read_text(), flags=re.S)
+        m = re.search(r"^# (.+)$", body, flags=re.M)
+        title = re.sub(r"\[([^\]]{1,3})\]\{\.en\d\}", r"\1", m.group(1) if m else stem)
+        base = stem[:-3] if stem.endswith(".es") else stem
+        num = "00" if base == "index" else ("00a" if base == "00-foreword" else base.split("-")[0])
+        if stem.endswith(".es"):
+            num = "ES " + num
+        safe = re.sub(r'[\\/:*?"<>|]', "", (TITLES_ES if stem.endswith(".es") else TITLES).get(base, title))
         safe = re.sub(r"^[■▲⬢✚◆★]\s*", "", safe)  # keep marks in headings, out of filenames
-        out = MIRROR / f"PACO Manual {num} - {safe}.md"
+        notes[stem] = f"PACO Manual {num} - {safe}.md"
+    for qmd in sorted(MASTER.glob("*.qmd")):
+        stem = qmd.stem
+        body = re.sub(r"\A---\n.*?\n---\n\n?", "", qmd.read_text(), flags=re.S)
+        m = re.search(r"^# (.+)$", body, flags=re.M)
+        title = m.group(1) if m else stem
+        if stem == "index":
+            body = "# The PACO Manual\n\n" + body
+        if stem == "index.es":
+            body = "# El manual de PACO\n\n" + body
+        title = re.sub(r"\[([^\]]{1,3})\]\{\.en\d\}", r"\1", title)
+        out = MIRROR / notes[stem]
         front = (
             "---\n"
             f'date: "{date.today().isoformat()}"\n'
             "type: reference\n"
             "tags:\n  - type/reference\n  - lang/en\n  - context/paco\n  - topic/ai\n"
-            f'source: "~/project-docs/PACO Manual/{qmd.name}"\n'
+            f'source: "~/mylab/paco-manual/{qmd.name}"\n'
             "mirror: true\n"
             "---\n\n"
             "> [!info] Read-only mirror of the PACO Manual master. Edit the Quarto source, then re-run `mirror_paco_manual.py`.\n\n"
         )
-        out.write_text(front + convert(body))
+        out.write_text(front + convert(body, notes))
         written += 1
     # remove stale mirror notes whose source disappeared
-    keep = {f"PACO Manual {('00' if q.stem == 'index' else q.stem.split('-')[0])}" for q in MASTER.glob("*.qmd")}
+    keep = set(notes.values())
     for note in MIRROR.glob("PACO Manual *.md"):
-        if not any(note.name.startswith(k + " ") for k in keep):
+        if note.name not in keep:
             note.unlink()
+    # design artifacts (diagram briefs) mirror beside the companion note, outside the chapter folder
+    design = MASTER / "design"
+    for src, lang, name in (("diagram-briefs.qmd", "en", "PACO Manual Design - Diagram briefs (EN).md"),
+                            ("diagram-briefs.es.qmd", "es", "PACO Manual Design - Diagram briefs (ES).md")):
+        if (design / src).exists():
+            front = ("---\n" f'date: "{date.today().isoformat()}"\n' "type: reference\n"
+                     f"tags:\n  - type/reference\n  - lang/{lang}\n  - context/paco\n  - topic/ai\n"
+                     f'source: "~/mylab/paco-manual/design/{src}"\n' "mirror: true\n---\n\n"
+                     "> [!info] Read-only mirror of the design briefs kept in the manual repository (`design/`). Edit the source, then re-run `mirror_paco_manual.py`.\n\n")
+            (MIRROR.parent / name).write_text(front + convert((design / src).read_text(), notes))
     print(f"mirrored {written} chapters into {MIRROR}")
 
 
