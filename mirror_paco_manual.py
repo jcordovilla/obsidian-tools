@@ -5,7 +5,8 @@ Master: ~/mylab/paco-manual/*.qmd (git repo). Mirror:
 ~/obsidian/JC/1.PROYECTOS/PACO/Manual/ as Obsidian notes, one-way.
 Run after each render. Converts Quarto callouts to Obsidian callouts,
 strips the enabler-mark spans to plain glyphs, and rewrites figures to
-wikilinks with the PNGs copied alongside.
+wikilinks. The PNGs go to the vault's Attachments folder under a
+paco-manual- prefix, the way every other vault image is stored.
 
 Usage: python3 mirror_paco_manual.py
 """
@@ -14,9 +15,12 @@ import shutil
 from datetime import date
 from pathlib import Path
 
+VAULT = Path.home() / "obsidian/JC"
 MASTER = Path.home() / "mylab/paco-manual"
-MIRROR = Path.home() / "obsidian/JC/1.PROYECTOS/PACO/Manual"
-FIGS = MIRROR / "figures"
+MIRROR = VAULT / "1.PROYECTOS/PACO/Manual"
+DESIGN_MIRROR = VAULT / "1.PROYECTOS/PACO/Manual Design"
+FIGS = VAULT / "Attachments"
+FIG_PREFIX = "paco-manual-"
 
 TITLES = {"index": "Cover"}
 TITLES_ES = {"index": "Portada"}
@@ -43,8 +47,9 @@ def convert(text: str, notes: dict) -> str:
     # figures -> wikilinks with caption
     def fig(m):
         cap, fname = m.group(1), Path(m.group(2)).name
-        return f"![[{fname}]]\n*{cap}*"
-    text = re.sub(r"!\[([^\]]*)\]\(figures/([^)]+)\)\{[^}]*\}", fig, text)
+        return f"![[{FIG_PREFIX}{fname}]]\n*{cap}*"
+    # the trailing attribute block is optional: not every figure line carries {width=100%}
+    text = re.sub(r"!\[([^\]]*)\]\(figures/([^)]+)\)(?:\{[^}]*\})?", fig, text)
     # chapter links -> wikilinks
     def link(mm):
         label, stem = mm.group(1), mm.group(2)
@@ -55,11 +60,14 @@ def convert(text: str, notes: dict) -> str:
 
 def main():
     MIRROR.mkdir(parents=True, exist_ok=True)
+    DESIGN_MIRROR.mkdir(parents=True, exist_ok=True)
     FIGS.mkdir(exist_ok=True)
-    for png in (MASTER / "figures").glob("*.png"):
-        shutil.copy2(png, FIGS / png.name)
-    for old in FIGS.glob("*.png"):
-        if not (MASTER / "figures" / old.name).exists():
+    masters = {FIG_PREFIX + png.name: png for png in (MASTER / "figures").glob("*.png")}
+    for name, png in masters.items():
+        shutil.copy2(png, FIGS / name)
+    # only prefixed files are ours: never touch the rest of Attachments
+    for old in FIGS.glob(FIG_PREFIX + "*.png"):
+        if old.name not in masters:
             old.unlink()
     written = 0
     notes = {}
@@ -90,9 +98,12 @@ def main():
             "---\n"
             f'date: "{date.today().isoformat()}"\n'
             "type: reference\n"
-            "tags:\n  - type/reference\n  - lang/en\n  - context/paco\n  - topic/ai\n"
+            f"tags:\n  - type/reference\n  - lang/{'es' if stem.endswith('.es') else 'en'}\n"
+            "  - context/paco\n  - topic/ai\n"
             f'source: "~/mylab/paco-manual/{qmd.name}"\n'
             "mirror: true\n"
+            # the mirror is a target, never a weave source: keep the skip-flag durable
+            "links_woven: true\n"
             "---\n\n"
             "> [!info] Read-only mirror of the PACO Manual master. Edit the Quarto source, then re-run `mirror_paco_manual.py`.\n\n"
         )
@@ -103,7 +114,7 @@ def main():
     for note in MIRROR.glob("PACO Manual *.md"):
         if note.name not in keep:
             note.unlink()
-    # design artifacts (diagram briefs) mirror beside the companion note, outside the chapter folder
+    # design artifacts (diagram briefs) mirror into the manual's production folder
     design = MASTER / "design"
     for src, lang, name in (("diagram-briefs.qmd", "en", "PACO Manual Design - Diagram briefs (EN).md"),
                             ("diagram-briefs.es.qmd", "es", "PACO Manual Design - Diagram briefs (ES).md")):
@@ -112,7 +123,7 @@ def main():
                      f"tags:\n  - type/reference\n  - lang/{lang}\n  - context/paco\n  - topic/ai\n"
                      f'source: "~/mylab/paco-manual/design/{src}"\n' "mirror: true\n---\n\n"
                      "> [!info] Read-only mirror of the design briefs kept in the manual repository (`design/`). Edit the source, then re-run `mirror_paco_manual.py`.\n\n")
-            (MIRROR.parent / name).write_text(front + convert((design / src).read_text(), notes))
+            (DESIGN_MIRROR / name).write_text(front + convert((design / src).read_text(), notes))
     print(f"mirrored {written} chapters into {MIRROR}")
 
 
