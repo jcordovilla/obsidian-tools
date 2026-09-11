@@ -38,6 +38,9 @@ from docx_format import (
     remove_empty_paragraphs,
     normalize_tables,
     disable_heading_autonumber,
+    fit_tables_to_content,
+    set_page_size,
+    set_running_header,
 )
 
 
@@ -152,7 +155,9 @@ class MarkdownToDocxExporter:
     def __init__(self, note_path, template_path, output_path, vault_path,
                  dry_run=True, style_map_overrides=None,
                  no_title_promotion=False, sanitize=True,
-                 keep_heading_numbers=False):
+                 keep_heading_numbers=False, fit_tables=False, table_font_size=None,
+                 landscape_min_cols=8, landscape_min_chars=250, page_size=None,
+                 running_title=None, page_numbers=False):
         self.note_path = Path(note_path) if note_path else None
         self.template_path = Path(template_path)
         self.output_path = Path(output_path) if output_path else None
@@ -166,6 +171,13 @@ class MarkdownToDocxExporter:
         # unless the caller opts to keep them.
         self.sanitize = sanitize
         self.keep_heading_numbers = keep_heading_numbers
+        self.fit_tables = fit_tables
+        self.table_font_size = table_font_size
+        self.landscape_min_cols = landscape_min_cols
+        self.landscape_min_chars = landscape_min_chars
+        self.page_size = page_size
+        self.running_title = running_title
+        self.page_numbers = page_numbers
         self._title_rendered = False  # tracks whether first H1 has been rendered
 
         self.style_map = dict(self.DEFAULT_STYLE_MAP)
@@ -720,12 +732,24 @@ class MarkdownToDocxExporter:
         for token in ast_tokens:
             self.render_block(token)
 
+        if self.page_size:
+            set_page_size(self.doc, self.page_size)
+
         # Clean-by-default sanitation pass
         if self.sanitize:
             if not self.keep_heading_numbers:
                 disable_heading_autonumber(self.doc)
             remove_empty_paragraphs(self.doc)
             normalize_tables(self.doc)
+        if self.fit_tables:
+            rep = fit_tables_to_content(self.doc, font_size_pt=self.table_font_size,
+                                        landscape_min_cols=self.landscape_min_cols,
+                                        landscape_min_chars=self.landscape_min_chars)
+            for ncols, nrows, orient, widths in rep:
+                print(f'  Table {ncols}x{nrows}: {orient}, columns cm {widths}')
+
+        if self.running_title is not None or self.page_numbers:
+            set_running_header(self.doc, self.running_title or '', self.page_numbers)
 
         # Save
         self.doc.save(str(self.output_path))
@@ -838,6 +862,21 @@ Examples:
                         help='JSON file mapping markdown elements to template style names')
     parser.add_argument('--keep-heading-numbers', action='store_true',
                         help='Keep the template\'s heading auto-numbering (default: strip it for prose)')
+    parser.add_argument('--fit-tables', action='store_true',
+                        help='Size table columns to their content, shade and repeat header rows, '
+                             'and put wide tables in landscape sections')
+    parser.add_argument('--table-font-size', type=float,
+                        help='Font size in points for table text (with --fit-tables)')
+    parser.add_argument('--landscape-min-cols', type=int, default=8,
+                        help='Tables with at least this many columns go landscape (default 8)')
+    parser.add_argument('--landscape-min-chars', type=int, default=250,
+                        help='Tables whose capped per-column text lengths sum to at least this go landscape (default 250)')
+    parser.add_argument('--page-size', choices=['A4', 'Letter'],
+                        help='Override the template page size (A4 or Letter) with 2.5 cm top/bottom and 2.2 cm side margins')
+    parser.add_argument('--running-title', type=str,
+                        help='Text for the page header (replaces the template placeholder; pass "" to clear)')
+    parser.add_argument('--page-numbers', action='store_true',
+                        help='Put a centred "Page X of Y" in the footer')
     parser.add_argument('--no-sanitize', action='store_true',
                         help='Disable the clean-up pass (empty-paragraph removal, table normalisation)')
     parser.add_argument('--no-title-promotion', action='store_true',
@@ -894,6 +933,13 @@ Examples:
         no_title_promotion=args.no_title_promotion,
         sanitize=not args.no_sanitize,
         keep_heading_numbers=args.keep_heading_numbers,
+        fit_tables=args.fit_tables,
+        table_font_size=args.table_font_size,
+        landscape_min_cols=args.landscape_min_cols,
+        landscape_min_chars=args.landscape_min_chars,
+        page_size=args.page_size,
+        running_title=args.running_title,
+        page_numbers=args.page_numbers,
     )
     return exporter.run()
 
