@@ -49,6 +49,7 @@ python <script>.py --vault /path/to/vault --no-dry-run # Actually modify files
 |--------|---------|
 | `export_to_docx.py` | Convert Obsidian markdown note to DOCX using a template (supports headings, lists, tables, images, links, code blocks) |
 | `convert_to_markdown.py` | Convert files (PDF, DOCX, PPTX, XLSX, HTML, images, etc.) to Markdown using markitdown |
+| `extract_pdf_annotations.py` | Extract highlights and margin notes from annotated PDFs and report how much of that content the vault already holds. Read-only; see `docs/pdf-annotations.md` |
 
 ### Content Enrichment
 

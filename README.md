@@ -46,6 +46,7 @@ python <script>.py --vault /path/to/vault --no-dry-run # Execute
 | `chatgpt_enrichment.py` | LLM analysis/tagging of ChatGPT exports |
 | `transcribe_audio.py` | Whisper transcription of audio in notes |
 | `generate_chapter_diagrams.py` | AI diagrams for book chapter summaries |
+| `extract_pdf_annotations.py` | Extract highlights and margin notes from annotated PDFs, check against the vault ([docs](docs/pdf-annotations.md)) |
 
 ### Tag & Metadata
 
