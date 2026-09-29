@@ -41,6 +41,12 @@ class VaultSync:
     # Files/directories to always skip (not worth backing up)
     SKIP_NAMES = {'.DS_Store', '__pycache__', '.venv', 'node_modules'}
 
+    # Top-level backup folders that exist only in the backup, written there by
+    # something other than this sync, and must never be treated as orphans.
+    # _Resumenes Diarios: daily summaries a Claude routine writes straight into
+    # the Dropbox copy through the Dropbox connector (JC, 2026-09-30).
+    KEEP_IN_BACKUP = {'_Resumenes Diarios'}
+
     def __init__(
         self,
         source_path: str,
@@ -195,7 +201,33 @@ class VaultSync:
         """Find files in backup that don't exist in source."""
         source_set = set(source_files.keys())
         backup_set = set(backup_files.keys())
-        return sorted(backup_set - source_set)
+        return sorted(
+            rel for rel in backup_set - source_set
+            if Path(rel).parts[0] not in self.KEEP_IN_BACKUP
+        )
+
+    def remove_empty_dirs(self, source_files: Dict[str, Path]) -> int:
+        """Remove backup folders left empty (or holding only skipped files such
+        as .DS_Store) after orphan deletion. Folders that still exist in the
+        source, and the protected backup-only folders, are kept."""
+        source_dirs = {str(Path(r).parent) for r in source_files} | {'.'}
+        removed = 0
+        for d in sorted(self.backup_path.rglob('*'), key=lambda p: len(p.parts), reverse=True):
+            if not d.is_dir() or d.is_symlink():
+                continue
+            rel = d.relative_to(self.backup_path)
+            if rel.parts[0] in self.KEEP_IN_BACKUP or rel.parts[0] == '.git':
+                continue
+            if any(str(rel) == sd or sd.startswith(str(rel) + '/') for sd in source_dirs):
+                continue
+            entries = list(d.iterdir())
+            if all(e.is_file() and e.name in self.SKIP_NAMES for e in entries):
+                if not self.dry_run:
+                    for e in entries:
+                        e.unlink()
+                    d.rmdir()
+                removed += 1
+        return removed
 
     def run(self):
         """Execute the sync operation."""
@@ -274,6 +306,8 @@ class VaultSync:
 
                     if self.delete_file(backup_file):
                         self.stats.files_deleted += 1
+                emptied = self.remove_empty_dirs(source_files)
+                print(f"   {'Would remove' if self.dry_run else 'Removed'} {emptied} empty folders")
             else:
                 print("\n   Use --delete to remove these files from backup")
 
