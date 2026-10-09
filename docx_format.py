@@ -18,7 +18,7 @@ import re
 
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
-from docx.shared import Pt
+from docx.shared import Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 # Column-width fractions of the usable text width, keyed by column count.
@@ -171,6 +171,7 @@ def normalize_tables(doc, fractions=None):
 # Content-aware table layout (opt-in from export_to_docx.py --fit-tables)
 # ---------------------------------------------------------------------------
 import copy as _copy
+from docx.text.paragraph import Paragraph as _Paragraph
 
 _TWIPS_PER_CM = 567
 
@@ -227,8 +228,116 @@ def _cell_text_len(cell):
     return max((len(p.text) for p in cell.paragraphs), default=0)
 
 
+def _cell_longest_word(cell):
+    """Length of the longest unbreakable run of characters in a cell (breaks at spaces and hyphens)."""
+    best = 0
+    for p in cell.paragraphs:
+        for w in re.split(r'[ \t\n\-]+', p.text):
+            best = max(best, len(w))
+    return best
+
+
+_NOTE_RE = re.compile(r'^(Sources?|Notes?|Reading|Fuentes?|Notas?)\b\s*[:.]', re.I)
+_NUM_RE = re.compile(r'^[\-+]?[\d.,]*\d%?(\s*\(.*\))?$')
+_NUM_BLANKS = {'', 'n.s.', 'n.c.', 'n.a.', '-'}
+
+
+def _p_text(p_el):
+    return ''.join(t.text or '' for t in p_el.iter(qn('w:t')))
+
+
+def _is_caption(p_el, max_chars=300):
+    """A short paragraph whose text runs are all bold: the usual table title."""
+    text = _p_text(p_el).strip()
+    if not text or len(text) > max_chars:
+        return False
+    runs = [r for r in p_el.iter(qn('w:r')) if ''.join(t.text or '' for t in r.iter(qn('w:t'))).strip()]
+    if not runs:
+        return False
+    for r in runs:
+        rPr = r.find(qn('w:rPr'))
+        b = rPr.find(qn('w:b')) if rPr is not None else None
+        if b is None or b.get(qn('w:val')) in ('0', 'false'):
+            return False
+    return True
+
+
+def _ends_landscape_section(p_el):
+    """True for a section-break paragraph that closes a landscape section."""
+    if p_el is None or p_el.tag != qn('w:p'):
+        return False
+    pPr = p_el.find(qn('w:pPr'))
+    sp = pPr.find(qn('w:sectPr')) if pPr is not None else None
+    if sp is None:
+        return False
+    pgSz = sp.find(qn('w:pgSz'))
+    return pgSz is not None and pgSz.get(qn('w:orient')) == 'landscape'
+
+
+def _trailing_notes(tbl, max_notes=3):
+    """Paragraphs right after a table that are its source, note or reading lines."""
+    notes = []
+    nxt = tbl.getnext()
+    while nxt is not None and nxt.tag == qn('w:p') and len(notes) < max_notes and _NOTE_RE.match(_p_text(nxt).strip()):
+        notes.append(nxt)
+        nxt = nxt.getnext()
+    return notes
+
+
+_TBLPR_ORDER = ['tblStyle', 'tblpPr', 'tblOverlap', 'bidiVisual', 'tblStyleRowBandSize', 'tblStyleColBandSize',
+                'tblW', 'jc', 'tblCellSpacing', 'tblInd', 'tblBorders', 'shd', 'tblLayout', 'tblCellMar', 'tblLook']
+
+
+def _border(tag, sz, color, val='single'):
+    e = OxmlElement(f'w:{tag}')
+    e.set(qn('w:val'), val); e.set(qn('w:sz'), str(sz)); e.set(qn('w:space'), '0'); e.set(qn('w:color'), color)
+    return e
+
+
+def _rule_table(t, notes, line='7F7F7F', hair='D9D9D9'):
+    """Report-style table: a firm rule above and below, a rule under the header, hairlines between rows,
+    no vertical lines, a little more room in the cells, and space around the table and its title."""
+    tblPr = t._tbl.tblPr
+    for tag in ('w:tblBorders', 'w:tblCellMar'):
+        e = tblPr.find(qn(tag))
+        if e is not None: tblPr.remove(e)
+    b = OxmlElement('w:tblBorders')
+    b.append(_border('top', 8, line)); b.append(_border('left', 0, 'auto', 'nil')); b.append(_border('bottom', 8, line))
+    b.append(_border('right', 0, 'auto', 'nil')); b.append(_border('insideH', 4, hair)); b.append(_border('insideV', 0, 'auto', 'nil'))
+    tblPr.append(b)
+    m = OxmlElement('w:tblCellMar')
+    for side, w in (('top', 36), ('left', 90), ('bottom', 36), ('right', 90)):
+        e = OxmlElement(f'w:{side}'); e.set(qn('w:w'), str(w)); e.set(qn('w:type'), 'dxa'); m.append(e)
+    tblPr.append(m)
+    kids = sorted(list(tblPr), key=lambda e: _TBLPR_ORDER.index(e.tag.split('}')[1]) if e.tag.split('}')[1] in _TBLPR_ORDER else 99)
+    for e in kids: tblPr.remove(e)
+    for e in kids: tblPr.append(e)
+    for cell in t.rows[0].cells:
+        tcPr = cell._tc.get_or_add_tcPr()
+        old = tcPr.find(qn('w:tcBorders'))
+        if old is not None: tcPr.remove(old)
+        tb = OxmlElement('w:tcBorders'); tb.append(_border('bottom', 8, line))
+        tcW = tcPr.find(qn('w:tcW'))
+        if tcW is not None: tcW.addnext(tb)
+        else: tcPr.insert(0, tb)
+    for row in t.rows:
+        for cell in row.cells:
+            for p in cell.paragraphs:
+                p.paragraph_format.space_after = Pt(0)
+    prev = t._tbl.getprevious()
+    if prev is not None and prev.tag == qn('w:p') and _is_caption(prev):
+        cp = _Paragraph(prev, None)
+        cp.paragraph_format.space_before = Pt(0 if cp.paragraph_format.page_break_before else 14)
+        cp.paragraph_format.space_after = Pt(5)
+        cp.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    if not notes:
+        nxt = t._tbl.getnext()
+        if nxt is not None and nxt.tag == qn('w:p') and nxt.find(qn('w:pPr') + '/' + qn('w:sectPr')) is None and not _is_heading(nxt):
+            _Paragraph(nxt, None).paragraph_format.space_before = Pt(16)
+
+
 def fit_tables_to_content(doc, font_size_pt=None, landscape_min_cols=8, landscape_min_chars=250,
-                          cap_chars=140, min_col_cm=1.6, header_fill='E7E6E6'):
+                          cap_chars=140, min_col_cm=1.6, header_fill='E7E6E6', ruled=False, keep_whole=False, flow_captions=()):
     """Size every table's columns to its content, shrink the table font, shade and
     repeat the header row, and move wide tables into their own landscape section
     (the section starts at the preceding heading when one sits within two blocks).
@@ -252,20 +361,59 @@ def fit_tables_to_content(doc, font_size_pt=None, landscape_min_cols=8, landscap
                     col_max = max(col_max, _cell_text_len(r.cells[i]))
             lens.append(col_max)
         capped = [max(4, min(l, cap_chars)) for l in lens]
-        wide = ncols >= landscape_min_cols or sum(capped) >= landscape_min_chars
-        usable = landscape_usable if wide else portrait_usable
-
-        # widths: proportional to capped length with a floor, renormalised
+        # per-column floor: wide enough for the longest word, so no word is split mid-word
         min_w = int(min_col_cm * _TWIPS_PER_CM)
+        char_cm = 0.0215 * (font_size_pt or 10)
+        words = []
+        for i in range(ncols):
+            words.append(max((_cell_longest_word(r.cells[i]) for r in t.rows if i < len(r.cells)), default=0))
+        floors = [max(min_w, int((w * char_cm + 0.45) * _TWIPS_PER_CM)) for w in words]
+        # a column of phrases needs room for two or three words a line
+        phrase = [max(f, int(2.6 * _TWIPS_PER_CM)) if lens[i] > 30 else f for i, f in enumerate(floors)]
+        if sum(phrase) <= portrait_usable or sum(floors) > portrait_usable * 1.09:
+            floors = phrase
+        # the estimate is cautious: a table within 6 percent of the portrait width stays portrait
+        wide = (ncols >= landscape_min_cols or sum(capped) >= landscape_min_chars
+                or sum(floors) > portrait_usable * 1.09)
+        usable = landscape_usable if wide else portrait_usable
+        tbl_font = font_size_pt
+        if sum(floors) > usable and font_size_pt and font_size_pt > 7:
+            # too many columns for the page: one point smaller for this table
+            tbl_font = font_size_pt - 1
+            floors = [max(min_w, int((w * 0.0215 * tbl_font + 0.4) * _TWIPS_PER_CM)) for w in words]
+        if sum(floors) > usable:
+            k = usable / sum(floors)
+            floors = [int(f * k) for f in floors]
+
+        # widths: proportional to capped length with the floor, renormalised
         raw = [c / sum(capped) * usable for c in capped]
-        widths = [max(min_w, int(x)) for x in raw]
+        widths = [max(floors[i], int(x)) for i, x in enumerate(raw)]
         excess = sum(widths) - usable
         if excess > 0:
-            flex = [i for i, w in enumerate(widths) if w > min_w]
-            flex_total = sum(widths[i] - min_w for i in flex) or 1
+            flex = [i for i, w in enumerate(widths) if w > floors[i]]
+            flex_total = sum(widths[i] - floors[i] for i in flex) or 1
             for i in flex:
-                widths[i] -= int(excess * (widths[i] - min_w) / flex_total)
-        widths[-1] += usable - sum(widths)
+                widths[i] -= int(excess * (widths[i] - floors[i]) / flex_total)
+        widest = max(range(ncols), key=lambda i: widths[i])
+        widths[widest] += usable - sum(widths)
+
+        # numeric columns read better right-aligned
+        numeric_cols = set()
+        for i in range(ncols):
+            vals = [r.cells[i].text.strip() for r in list(t.rows)[1:] if i < len(r.cells)]
+            nums = [v for v in vals if _NUM_RE.match(v)]
+            if nums and all(_NUM_RE.match(v) or v.lower() in _NUM_BLANKS for v in vals):
+                numeric_cols.add(i)
+
+        # columns of marks or one-word answers (X, Yes, No) read better centred
+        mark_cols = set()
+        if ruled:
+            for i in range(1, ncols):
+                if i in numeric_cols: continue
+                vals = [r.cells[i].text.strip() for r in list(t.rows)[1:] if i < len(r.cells)]
+                short = [v for v in vals if len(v) <= 3]
+                if vals and len(short) >= 0.8 * len(vals) and any(vals) and all(len(v) <= 14 for v in vals):
+                    mark_cols.add(i)
 
         _set_fixed_layout(t, usable)
         grid = t._tbl.find(qn('w:tblGrid'))
@@ -275,6 +423,8 @@ def fit_tables_to_content(doc, font_size_pt=None, landscape_min_cols=8, landscap
                 gc = OxmlElement('w:gridCol'); gc.set(qn('w:w'), str(w)); grid.append(gc)
         for ri, row in enumerate(t.rows):
             trPr = row._tr.get_or_add_trPr()
+            if trPr.find(qn('w:cantSplit')) is None:
+                trPr.insert(0, OxmlElement('w:cantSplit'))
             if ri == 0 and trPr.find(qn('w:tblHeader')) is None:
                 trPr.append(OxmlElement('w:tblHeader'))
             for i, cell in enumerate(row.cells):
@@ -291,25 +441,66 @@ def fit_tables_to_content(doc, font_size_pt=None, landscape_min_cols=8, landscap
                 for p in cell.paragraphs:
                     if ri == 0:
                         p.paragraph_format.keep_with_next = True
-                    if font_size_pt:
+                        if header_fill:
+                            # the light fill replaces the style's dark header, so its white text must go dark too
+                            for run in p.runs:
+                                run.font.color.rgb = RGBColor(0, 0, 0)
+                    if i in numeric_cols:
+                        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                    elif i in mark_cols:
+                        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    if tbl_font:
+                        mark = p.text.strip() in ('\u25cf', '\u25cb', '\u25d0')
                         for run in p.runs:
-                            run.font.size = Pt(font_size_pt)
+                            run.font.size = Pt(tbl_font + 3 if mark else tbl_font)
                         if not p.runs:
                             p.style = p.style  # no-op, keeps paragraph
-        # landscape wrapping
+        # a short table of short cells stays whole on one page
+        _prev = t._tbl.getprevious()
+        _cap = _p_text(_prev).strip() if _prev is not None and _prev.tag == qn('w:p') else ''
+        _flow = any(_cap.startswith(c) for c in flow_captions if c)
+        if (keep_whole and not _flow) or (len(t.rows) <= 8 and sum(capped) < 420 and not wide):
+            for row in list(t.rows)[:-1]:
+                for cell in row.cells:
+                    for p in cell.paragraphs:
+                        p.paragraph_format.keep_with_next = True
+        # the table's own source, note and reading lines: small type, kept close to the table
+        notes = _trailing_notes(t._tbl)
+        if ruled:
+            _rule_table(t, notes)
+        if notes:
+            # a note never lands on a page without at least the table's last row
+            for cell in t.rows[-1].cells:
+                for p_ in cell.paragraphs:
+                    p_.paragraph_format.keep_with_next = True
+        for n_el in notes:
+            n_par = _Paragraph(n_el, None)
+            n_par.paragraph_format.space_before = Pt(5 if ruled and n_el is notes[0] else 3)
+            n_par.paragraph_format.space_after = Pt((16 if ruled else 10) if n_el is notes[-1] else 2)
+            n_par.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            if font_size_pt:
+                for run in n_par.runs:
+                    run.font.size = Pt(font_size_pt)
+        # landscape wrapping: the section takes the title before the table and the notes after it
         if wide:
             tbl = t._tbl
             start = tbl
             prev = tbl.getprevious()
             if prev is not None and prev.tag == qn('w:p'):
-                if _is_heading(prev):
+                if _is_heading(prev) or _is_caption(prev):
                     start = prev
-                else:
-                    prev2 = prev.getprevious()
-                    if prev2 is not None and prev2.tag == qn('w:p') and _is_heading(prev2):
-                        start = prev2
-            start.addprevious(_section_break_paragraph(_make_sectPr(final_sectPr, landscape=False)))
-            tbl.addnext(_section_break_paragraph(_make_sectPr(final_sectPr, landscape=True)))
+                prev2 = prev.getprevious()
+                if prev2 is not None and prev2.tag == qn('w:p') and _is_heading(prev2):
+                    start = prev2
+            inside = [n for n in notes if len(_p_text(n)) <= 420] if all(len(_p_text(n)) <= 420 for n in notes) else []
+            end = inside[-1] if inside else tbl
+            before = start.getprevious()
+            if _ends_landscape_section(before):
+                # the previous block is already landscape: run on in the same section
+                before.getparent().remove(before)
+            else:
+                start.addprevious(_section_break_paragraph(_make_sectPr(final_sectPr, landscape=False)))
+            end.addnext(_section_break_paragraph(_make_sectPr(final_sectPr, landscape=True)))
         # keep the paragraph before the table with it
         prev = t._tbl.getprevious()
         if prev is not None and prev.tag == qn('w:p'):
@@ -381,3 +572,120 @@ def set_running_header(doc, text=None, page_numbers=False, font_size_pt=8):
                 run = p.add_run(' of '); run.font.size = Pt(font_size_pt)
                 _field(p, ' NUMPAGES ')
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+
+def set_project_footer(doc, line1_left, line2_left, font_size_pt=8):
+    """Two-line project footer on every footer part (default, first page, even pages):
+    line 1 `line1_left` and, flush right, the document name (FILENAME field); line 2 `line2_left`
+    and, flush right, "Page X of Y" (PAGE and NUMPAGES fields). The RRAM footer standard."""
+    def _field(paragraph, instr):
+        r = paragraph.add_run()
+        b = OxmlElement('w:fldChar'); b.set(qn('w:fldCharType'), 'begin'); r._r.append(b)
+        it = OxmlElement('w:instrText'); it.set(qn('xml:space'), 'preserve'); it.text = instr; r._r.append(it)
+        e = OxmlElement('w:fldChar'); e.set(qn('w:fldCharType'), 'end'); r._r.append(e)
+        r.font.size = Pt(font_size_pt)
+    def _right_tab(paragraph, twips):
+        pPr = paragraph._p.get_or_add_pPr()
+        tabs = OxmlElement('w:tabs'); tab = OxmlElement('w:tab')
+        tab.set(qn('w:val'), 'right'); tab.set(qn('w:pos'), str(twips)); tabs.append(tab); pPr.append(tabs)
+    for section in doc.sections:
+        width = int((section.page_width - section.left_margin - section.right_margin) / 635)  # EMU to twips
+        for part in (section.footer, section.first_page_footer, section.even_page_footer):
+            for p in list(part.paragraphs):
+                p._p.getparent().remove(p._p)
+            for t in list(part._element.findall(qn('w:tbl'))):
+                part._element.remove(t)
+            p1 = part.add_paragraph(); _right_tab(p1, width)
+            r = p1.add_run(line1_left + '\t'); r.font.size = Pt(font_size_pt)
+            _field(p1, ' FILENAME ')
+            p2 = part.add_paragraph(); _right_tab(p2, width)
+            r = p2.add_run(line2_left + '\tPage '); r.font.size = Pt(font_size_pt)
+            _field(p2, ' PAGE ')
+            r = p2.add_run(' of '); r.font.size = Pt(font_size_pt)
+            _field(p2, ' NUMPAGES ')
+            for q in (p1, p2):
+                q.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                q.paragraph_format.space_before = Pt(0); q.paragraph_format.space_after = Pt(0)
+
+
+def keep_headings_with_next(doc, page_break_level1=False):
+    """Keep every heading on the page of the text that follows it; optionally start
+    each level-1 heading after the first on a new page."""
+    seen_h1 = False
+    for p in doc.element.body.iter(qn('w:p')):
+        if not _is_heading(p):
+            continue
+        par = _Paragraph(p, None)
+        par.paragraph_format.keep_with_next = True
+        style = p.find(qn('w:pPr')).find(qn('w:pStyle')).get(qn('w:val'), '').lower()
+        if page_break_level1 and style in ('heading1', 'heading 1'):
+            if seen_h1:
+                par.paragraph_format.page_break_before = True
+            seen_h1 = True
+
+
+def annex_page_numbering(doc, pattern=r'^(Annex [A-Z])\b', separator=' - '):
+    """Give each annex its own page numbering: every level-1 heading matching `pattern` opens a new section whose
+    pages count from 1 and whose footers print the annex label before the number ("Annex A - 1"). The body before
+    the first annex keeps the plain number. Call after fit_tables_to_content(), which adds the landscape sections."""
+    body = doc.element.body
+    final_sectPr = body.find(qn('w:sectPr'))
+    rx = re.compile(pattern)
+
+    def h1_label(el):
+        if el.tag != qn('w:p') or not _is_heading(el):
+            return None
+        style = el.find(qn('w:pPr')).find(qn('w:pStyle')).get(qn('w:val'), '').lower().replace(' ', '')
+        m = rx.match(_p_text(el).strip()) if style == 'heading1' else None
+        return m.group(1) if m else None
+
+    # 1. a section break in front of every annex heading (it closes the section before it)
+    for el in list(body):
+        if h1_label(el):
+            _Paragraph(el, None).paragraph_format.page_break_before = False
+            el.addprevious(_section_break_paragraph(_make_sectPr(final_sectPr, landscape=False)))
+
+    # 2. zone of each section, in document order
+    zone, zones = None, []
+    for el in body:
+        lab = h1_label(el)
+        if lab:
+            zone = lab
+        sp = el if el.tag == qn('w:sectPr') else (el.find(qn('w:pPr') + '/' + qn('w:sectPr')) if el.tag == qn('w:p') else None)
+        if sp is not None:
+            zones.append((sp, zone))
+
+    # 3. one footer per annex, cloned from the document's default footer, with the label before the page field
+    base = doc.sections[-1].footer._element
+    rids, started = {}, set()
+    for sp, zone in zones:
+        pg = sp.find(qn('w:pgNumType'))
+        if zone is None:
+            continue
+        if zone not in rids:
+            part, rid = doc.part.add_footer_part()
+            ftr = part.element
+            for child in list(ftr): ftr.remove(child)
+            for child in base: ftr.append(_copy.deepcopy(child))
+            for p_el in ftr.iter(qn('w:p')):
+                first_fld = next((r for r in p_el.findall(qn('w:r')) if r.find(qn('w:fldChar')) is not None), None)
+                if first_fld is not None:
+                    lab_run = _copy.deepcopy(first_fld)
+                    for ch in list(lab_run):
+                        if ch.tag != qn('w:rPr'): lab_run.remove(ch)
+                    t = OxmlElement('w:t'); t.set(qn('xml:space'), 'preserve'); t.text = zone + separator; lab_run.append(t)
+                    first_fld.addprevious(lab_run)
+                    break
+            rids[zone] = rid
+        for ref in sp.findall(qn('w:footerReference')): sp.remove(ref)
+        for i, typ in enumerate(('default', 'even', 'first')):
+            ref = OxmlElement('w:footerReference'); ref.set(qn('w:type'), typ); ref.set(qn('r:id'), rids[zone]); sp.insert(i, ref)
+        if pg is None:
+            pg = OxmlElement('w:pgNumType')
+            anchor = sp.find(qn('w:pgMar'))
+            (anchor.addnext(pg) if anchor is not None else sp.append(pg))
+        if zone not in started:
+            pg.set(qn('w:start'), '1'); started.add(zone)
+        elif qn('w:start') in pg.attrib:
+            del pg.attrib[qn('w:start')]
+    return sorted(rids)

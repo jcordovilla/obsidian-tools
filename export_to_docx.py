@@ -41,6 +41,9 @@ from docx_format import (
     fit_tables_to_content,
     set_page_size,
     set_running_header,
+    set_project_footer,
+    keep_headings_with_next,
+    annex_page_numbering,
 )
 
 
@@ -51,6 +54,8 @@ from docx_format import (
 # Precompile embed regex for preprocessing (converts ![[img]] to standard ![](obsidian-embed:...))
 _EMBED_RE = re.compile(r'!\[\[([^\]|]+?)(?:\|[^\]]*?)?\]\]')
 
+_SPACED_IMG_RE = re.compile(r'!\[([^\]]*)\]\(([^)<>"]*\s[^)<>"]*\.(?:png|jpe?g|gif|svg|webp))\)', re.I)
+
 # Callout prefix pattern: > [!type] or > [!type]+
 _CALLOUT_RE = re.compile(r'^>\s*\[!(\w+)\]\+?\s*$', re.MULTILINE)
 
@@ -60,7 +65,9 @@ def _preprocess_embeds(text):
     def _replace(m):
         target = m.group(1)
         return f'![{target}](obsidian-embed:{target})'
-    return _EMBED_RE.sub(_replace, text)
+    text = _EMBED_RE.sub(_replace, text)
+    # a standard image link whose path holds spaces only parses inside angle brackets
+    return _SPACED_IMG_RE.sub(lambda m: f'![{m.group(1)}](<{m.group(2)}>)', text)
 
 
 def _preprocess_callouts_and_tables(text):
@@ -157,7 +164,8 @@ class MarkdownToDocxExporter:
                  no_title_promotion=False, sanitize=True,
                  keep_heading_numbers=False, fit_tables=False, table_font_size=None,
                  landscape_min_cols=8, landscape_min_chars=250, page_size=None,
-                 running_title=None, page_numbers=False):
+                 figure_captions=False, boxed_quotes=False, chapter_page_breaks=False, table_rules=False, keep_tables_whole=False, flow_tables='', annex_numbering=False,
+                 running_title=None, page_numbers=False, project_footer=None):
         self.note_path = Path(note_path) if note_path else None
         self.template_path = Path(template_path)
         self.output_path = Path(output_path) if output_path else None
@@ -174,10 +182,18 @@ class MarkdownToDocxExporter:
         self.fit_tables = fit_tables
         self.table_font_size = table_font_size
         self.landscape_min_cols = landscape_min_cols
+        self.figure_captions = figure_captions
+        self.table_rules = table_rules
+        self.keep_tables_whole = keep_tables_whole
+        self.annex_numbering = annex_numbering
+        self.flow_tables = [c.strip() for c in (flow_tables or '').split('|') if c.strip()]
+        self.boxed_quotes = boxed_quotes
+        self.chapter_page_breaks = chapter_page_breaks
         self.landscape_min_chars = landscape_min_chars
         self.page_size = page_size
         self.running_title = running_title
         self.page_numbers = page_numbers
+        self.project_footer = project_footer
         self._title_rendered = False  # tracks whether first H1 has been rendered
 
         self.style_map = dict(self.DEFAULT_STYLE_MAP)
@@ -278,7 +294,12 @@ class MarkdownToDocxExporter:
     # -------------------------------------------------------------------------
 
     def resolve_image_path(self, src):
-        """Resolve an image src to an absolute path in the vault."""
+        """Resolve an image src to an absolute path: as given, beside the note, or in the vault."""
+        from urllib.parse import unquote
+        src = unquote(src)
+        for candidate in (Path(src), self.note_path.parent / src if self.note_path else None):
+            if candidate is not None and candidate.is_file():
+                return candidate
         if not self.vault_path:
             return None
 
@@ -436,9 +457,14 @@ class MarkdownToDocxExporter:
     # Image rendering
     # -------------------------------------------------------------------------
 
-    def _render_image(self, src):
-        """Add an image as its own paragraph in the document."""
+    def _render_image(self, src, alt=''):
+        """Add an image as its own paragraph in the document. With figure captions on,
+        the alt text prints around it: its first sentence in bold above, the rest small below."""
         image_path = self.resolve_image_path(src)
+        title, note = '', ''
+        if self.figure_captions and alt and alt.strip() != str(src).strip():
+            parts = re.split(r'(?<=[a-z\)][.!?])\s+(?=[A-Z])', alt.strip(), maxsplit=1)
+            title, note = parts[0], (parts[1] if len(parts) > 1 else '')
 
         if self.dry_run:
             if image_path and image_path.exists():
@@ -449,7 +475,21 @@ class MarkdownToDocxExporter:
 
         if image_path and image_path.exists():
             try:
+                if title:
+                    cap = self.doc.add_paragraph(style=self._get_style('paragraph'))
+                    cap.add_run(title).bold = True
+                    cap.paragraph_format.keep_with_next = True
+                    cap.paragraph_format.space_before = Pt(16)
+                    cap.alignment = 0
                 self.doc.add_picture(str(image_path), width=Inches(5.5))
+                pic_par = self.doc.paragraphs[-1]
+                pic_par.alignment = 1
+                if note:
+                    pic_par.paragraph_format.keep_with_next = True
+                    npar = self.doc.add_paragraph(style=self._get_style('paragraph'))
+                    npar.add_run(note).font.size = Pt(8)
+                    npar.paragraph_format.space_after = Pt(16)
+                    npar.alignment = 0
                 self.stats['images']['found'] += 1
             except Exception as e:
                 self.doc.add_paragraph(f'[Image error: {src} - {e}]')
@@ -483,6 +523,10 @@ class MarkdownToDocxExporter:
                 para = self.doc.add_paragraph()
                 run = para.add_run()
                 run.add_break()
+        elif ttype == 'block_html':
+            # <!-- pagebreak --> starts the next paragraph on a new page
+            if 'pagebreak' in token.get('raw', ''):
+                self._break_next = True
         elif ttype == 'blank_line':
             pass  # ignore
         else:
@@ -550,12 +594,15 @@ class MarkdownToDocxExporter:
                     src = url[len('obsidian-embed:'):]
                 else:
                     src = url
-                self._render_image(src)
+                self._render_image(src, alt=self._extract_text(child.get('children', [])))
                 return
 
         if not self.dry_run:
             style = self._get_style('paragraph')
             para = self.doc.add_paragraph(style=style)
+            if getattr(self, '_break_next', False):
+                para.paragraph_format.page_break_before = True
+                self._break_next = False
             self.render_inline(para, children)
 
     def _render_list(self, token, depth=0):
@@ -626,6 +673,22 @@ class MarkdownToDocxExporter:
                 return callout_type, new_children
         return None, children
 
+    @staticmethod
+    def _box_paragraph(para, fill='F2F2F2', line='A6A6A6'):
+        """Shade and frame a paragraph; adjacent paragraphs with the same frame join into one box."""
+        pPr = para._p.get_or_add_pPr()
+        bdr = OxmlElement('w:pBdr')
+        for side in ('top', 'left', 'bottom', 'right'):
+            e = OxmlElement(f'w:{side}')
+            e.set(qn('w:val'), 'single'); e.set(qn('w:sz'), '4')
+            e.set(qn('w:space'), '6'); e.set(qn('w:color'), line)
+            bdr.append(e)
+        shd = OxmlElement('w:shd')
+        shd.set(qn('w:val'), 'clear'); shd.set(qn('w:color'), 'auto'); shd.set(qn('w:fill'), fill)
+        pPr.append(bdr); pPr.append(shd)
+        para.paragraph_format.left_indent = Pt(7)
+        para.paragraph_format.right_indent = Pt(7)
+
     def _render_block_quote(self, token):
         self.stats['block_quotes'] += 1
         if self.dry_run:
@@ -645,7 +708,11 @@ class MarkdownToDocxExporter:
                 if not inline_children:
                     continue
 
-                para = self.doc.add_paragraph(style=style)
+                if self.boxed_quotes:
+                    para = self.doc.add_paragraph(style=self._get_style('paragraph'))
+                    self._box_paragraph(para)
+                else:
+                    para = self.doc.add_paragraph(style=style)
                 self.render_inline(para, inline_children)
             elif ctype == 'table':
                 # Tables extracted from blockquotes by preprocessing
@@ -741,15 +808,25 @@ class MarkdownToDocxExporter:
                 disable_heading_autonumber(self.doc)
             remove_empty_paragraphs(self.doc)
             normalize_tables(self.doc)
+            keep_headings_with_next(self.doc, page_break_level1=self.chapter_page_breaks)
         if self.fit_tables:
             rep = fit_tables_to_content(self.doc, font_size_pt=self.table_font_size,
                                         landscape_min_cols=self.landscape_min_cols,
-                                        landscape_min_chars=self.landscape_min_chars)
+                                        landscape_min_chars=self.landscape_min_chars,
+                                        ruled=self.table_rules, keep_whole=self.keep_tables_whole,
+                                        flow_captions=self.flow_tables)
             for ncols, nrows, orient, widths in rep:
                 print(f'  Table {ncols}x{nrows}: {orient}, columns cm {widths}')
 
+        if self.annex_numbering:
+            labs = annex_page_numbering(self.doc)
+            print(f'  Annex page numbering: {", ".join(labs) or "no annex heading found"}')
+
         if self.running_title is not None or self.page_numbers:
             set_running_header(self.doc, self.running_title or '', self.page_numbers)
+        if self.project_footer:
+            left1, _, left2 = self.project_footer.partition('|')
+            set_project_footer(self.doc, left1.strip(), left2.strip())
 
         # Save
         self.doc.save(str(self.output_path))
@@ -867,6 +944,20 @@ Examples:
                              'and put wide tables in landscape sections')
     parser.add_argument('--table-font-size', type=float,
                         help='Font size in points for table text (with --fit-tables)')
+    parser.add_argument('--figure-captions', action='store_true',
+                        help='Print each image alt text as its caption: first sentence in bold above, the rest small below')
+    parser.add_argument('--table-rules', action='store_true',
+                        help='With --fit-tables: horizontal rules, roomier cells and space around each table and its title')
+    parser.add_argument('--keep-tables-whole', action='store_true',
+                        help='With --fit-tables: never break a table across pages when it fits on one')
+    parser.add_argument('--flow-tables', default='',
+                        help='With --keep-tables-whole: title prefixes, separated by |, of tables longer than a page that may break')
+    parser.add_argument('--annex-numbering', action='store_true',
+                        help='Restart page numbering at each "Annex X" level-1 heading and print "Annex X - n" in the footer')
+    parser.add_argument('--boxed-quotes', action='store_true',
+                        help='Render block quotes as shaded, framed boxes in the body style')
+    parser.add_argument('--chapter-page-breaks', action='store_true',
+                        help='Start every level-1 heading after the first on a new page')
     parser.add_argument('--landscape-min-cols', type=int, default=8,
                         help='Tables with at least this many columns go landscape (default 8)')
     parser.add_argument('--landscape-min-chars', type=int, default=250,
@@ -877,6 +968,10 @@ Examples:
                         help='Text for the page header (replaces the template placeholder; pass "" to clear)')
     parser.add_argument('--page-numbers', action='store_true',
                         help='Put a centred "Page X of Y" in the footer')
+    parser.add_argument('--project-footer', type=str,
+                        help='Two-line project footer "LINE1|LINE2": line 1 left text with the document name '
+                             '(FILENAME field) flush right; line 2 left text with "Page X of Y" flush right '
+                             '(RRAM footer standard: "Technical Assistance to SSATP Pillar 4 - Resilient Road Asset Management|IA2347")')
     parser.add_argument('--no-sanitize', action='store_true',
                         help='Disable the clean-up pass (empty-paragraph removal, table normalisation)')
     parser.add_argument('--no-title-promotion', action='store_true',
@@ -937,9 +1032,17 @@ Examples:
         table_font_size=args.table_font_size,
         landscape_min_cols=args.landscape_min_cols,
         landscape_min_chars=args.landscape_min_chars,
+        figure_captions=args.figure_captions,
+        table_rules=args.table_rules,
+        keep_tables_whole=args.keep_tables_whole,
+        flow_tables=args.flow_tables,
+        annex_numbering=args.annex_numbering,
+        boxed_quotes=args.boxed_quotes,
+        chapter_page_breaks=args.chapter_page_breaks,
         page_size=args.page_size,
         running_title=args.running_title,
         page_numbers=args.page_numbers,
+        project_footer=args.project_footer,
     )
     return exporter.run()
 

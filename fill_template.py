@@ -24,6 +24,7 @@ except ImportError:
     print("Error: python-docx not installed. Install with: pip install python-docx")
     sys.exit(1)
 
+from docx.text.paragraph import Paragraph
 from docx_format import (
     strip_leading_number,
     remove_empty_paragraphs,
@@ -211,7 +212,18 @@ def _fill_rram(doc, data, dry_run=True):
 
             if not dry_run:
                 _set_paragraph_text(paras[slot['heading']], title)
-                _set_paragraph_text(paras[slot['body']], body)
+                if data.get('split_body') and len(body_parts) > 1:
+                    # One paragraph per body element, cloned from the body
+                    # placeholder so style and run formatting carry over.
+                    _set_paragraph_text(paras[slot['body']], body_parts[0])
+                    anchor = paras[slot['body']]._p
+                    for part in body_parts[1:]:
+                        new_p = copy.deepcopy(paras[slot['body']]._p)
+                        anchor.addnext(new_p)
+                        anchor = new_p
+                        _set_paragraph_text(Paragraph(new_p, paras[slot['body']]._parent), part)
+                else:
+                    _set_paragraph_text(paras[slot['body']], body)
                 # Remove the extra bullet placeholder paragraphs outright so
                 # they do not leave empty bullets behind.
                 for idx in slot.get('extra', []):
@@ -228,7 +240,15 @@ def _fill_rram(doc, data, dry_run=True):
     report.append(f"\nNext steps ({len(next_steps)}):")
     for ns in next_steps:
         report.append(f"  - {ns[:80]}{'...' if len(ns) > 80 else ''}")
-    if not dry_run:
+    if not dry_run and data.get('merge_next_steps') and not next_steps:
+        # Single "Next Steps & Actions" section: drop the Next Steps heading,
+        # intro and bullets, and retitle the Actions heading.
+        to_remove.append(paras[_RRAM['next_steps_intro'] - 1])
+        to_remove.append(paras[_RRAM['next_steps_intro']])
+        for p_idx in _RRAM['next_steps']:
+            to_remove.append(paras[p_idx])
+        _set_paragraph_text(paras[_RRAM['next_steps'][-1] + 1], 'Next Steps & Actions')
+    elif not dry_run:
         for slot_idx, p_idx in enumerate(_RRAM['next_steps']):
             if slot_idx < len(next_steps):
                 _set_paragraph_text(paras[p_idx], next_steps[slot_idx])
