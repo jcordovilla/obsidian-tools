@@ -96,12 +96,13 @@ def _set_table_cell_margins(table, top=28, bottom=28, left=90, right=90):
     if old is not None:
         tblPr.remove(old)
     mar = OxmlElement('w:tblCellMar')
-    for side, val in (('top', top), ('bottom', bottom), ('left', left), ('right', right)):
+    for side, val in (('top', top), ('left', left), ('bottom', bottom), ('right', right)):  # schema order
         e = OxmlElement('w:' + side)
         e.set(qn('w:w'), str(val))
         e.set(qn('w:type'), 'dxa')
         mar.append(e)
     tblPr.append(mar)
+    _order_tblpr(tblPr)
 
 
 def _set_fixed_layout(table, total):
@@ -117,6 +118,20 @@ def _set_fixed_layout(table, total):
     lay = OxmlElement('w:tblLayout')
     lay.set(qn('w:type'), 'fixed')
     tblPr.append(lay)
+    _order_tblpr(tblPr)
+
+
+def _order_tblpr(tblPr):
+    """Put the table properties in the order the WordprocessingML schema requires
+    (tblLook last). Appending tblW, tblLayout or tblCellMar after an existing tblLook
+    makes Word report unreadable content."""
+    order = ['tblStyle', 'tblpPr', 'tblOverlap', 'bidiVisual', 'tblStyleRowBandSize', 'tblStyleColBandSize',
+             'tblW', 'jc', 'tblCellSpacing', 'tblInd', 'tblBorders', 'shd', 'tblLayout', 'tblCellMar', 'tblLook']
+    kids = sorted(list(tblPr), key=lambda e: order.index(e.tag.split('}')[1]) if e.tag.split('}')[1] in order else 99)
+    for e in kids:
+        tblPr.remove(e)
+    for e in kids:
+        tblPr.append(e)
 
 
 def normalize_tables(doc, fractions=None):
