@@ -21,6 +21,7 @@ try:
     from docx import Document
     from docx.shared import Inches, Pt
     from docx.enum.style import WD_STYLE_TYPE
+    from docx.enum.text import WD_COLOR_INDEX
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
 except ImportError:
@@ -219,6 +220,7 @@ class MarkdownToDocxExporter:
             plugins=[
                 'table',
                 'strikethrough',
+                'mark',
                 wikilink_plugin,
             ],
         )
@@ -452,6 +454,16 @@ class MarkdownToDocxExporter:
                 text = self._extract_text(child.get('children', []))
                 run = paragraph.add_run(text)
                 run.font.strike = True
+
+            elif ctype == 'mark':
+                # Obsidian ==highlight== prints as a yellow highlight
+                first = len(paragraph.runs)
+                self.render_inline(
+                    paragraph, child.get('children', []),
+                    bold=bold, italic=italic,
+                )
+                for run in paragraph.runs[first:]:
+                    run.font.highlight_color = WD_COLOR_INDEX.YELLOW
 
     # -------------------------------------------------------------------------
     # Image rendering
