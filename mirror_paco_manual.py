@@ -6,7 +6,9 @@ Master: ~/mylab/paco-manual/*.qmd (git repo). Mirror:
 Run after each render. Converts Quarto callouts to Obsidian callouts,
 strips the enabler-mark spans to plain glyphs, and rewrites figures to
 wikilinks. The PNGs go to the vault's Attachments folder under a
-paco-manual- prefix, the way every other vault image is stored.
+paco-manual- prefix, the way every other vault image is stored. The
+rendered PDFs go there too, each embedded at the end of its own cover note
+(English edition on the Cover, Spanish edition on the Portada).
 
 Usage: python3 mirror_paco_manual.py
 """
@@ -21,19 +23,36 @@ MIRROR = VAULT / "1.PROYECTOS/PACO/Manual"
 DESIGN_MIRROR = VAULT / "1.PROYECTOS/PACO/Manual Design"
 FIGS = VAULT / "Attachments"
 FIG_PREFIX = "paco-manual-"
+# cover stem -> (rendered PDF, name in Attachments, section added at the end of that cover)
+PDFS = {
+    "index": (MASTER / "_output/The-PACO-Manual.pdf", "paco-manual.pdf",
+              "## The whole manual as a PDF\n\n"
+              "The English edition as one A4 document, rendered from the same chapters."),
+    "index.es": (MASTER / "_output-es/El-manual-de-PACO.pdf", "paco-manual.es.pdf",
+                 "## El manual completo en PDF\n\n"
+                 "La edición en español en un solo documento A4, generado a partir de los mismos capítulos."),
+}
 
 TITLES = {"index": "Cover"}
 TITLES_ES = {"index": "Portada"}
 
 
-def convert(text: str, notes: dict) -> str:
-    # Quarto callouts -> Obsidian callouts
+def convert(text: str, notes: dict, lang: str = "en") -> str:
+    # Quarto callouts -> Obsidian callouts, keeping the box title (as the web build does)
     def callout(m):
-        kind = m.group(1)
-        body = m.group(2).strip("\n")
-        lines = [f"> [!{kind}]"] + [f"> {l}" if l.strip() else ">" for l in body.split("\n")]
+        kind, attrs = m.group(1), m.group(2)
+        body = m.group(3).strip("\n").split("\n")
+        t = re.search(r'title="([^"]+)"', attrs)
+        title = t.group(1) if t else ""
+        if not title and body and body[0].startswith("## "):
+            title, body = body[0][3:].strip(), body[1:]
+            while body and not body[0].strip():
+                body.pop(0)
+        if not title and kind == "tip" and lang == "es":
+            title = "Consejo"  # Obsidian would print the English type name
+        lines = [f"> [!{kind}] {title}".rstrip()] + [f"> {l}" if l.strip() else ">" for l in body]
         return "\n".join(lines) + "\n"
-    text = re.sub(r"::: \{\.callout-(\w+)[^\n]*\}\n(.*?)\n:::\n", callout, text, flags=re.S)
+    text = re.sub(r"::: \{\.callout-(\w+)([^\n]*)\}\n(.*?)\n:::\n", callout, text, flags=re.S)
     # Quarto fence attributes -> plain fences for Obsidian
     text = text.replace("```{.text .sourceCode}", "```text")
     # html-only blocks (cover card grid) dropped; print-only blocks unwrapped
@@ -41,7 +60,7 @@ def convert(text: str, notes: dict) -> str:
     text = re.sub(r"::: \{\.content-visible unless-format=\"html\"\}\n(.*?)\n:::\n", r"\1\n", text, flags=re.S)
     text = re.sub(r"::: \{\.cover-promise\}\n(.*?)\n:::\n", r"> \1\n", text, flags=re.S)
     # case labels -> bold
-    text = re.sub(r"^(You say|You get|Why this works):", r"**\1:**", text, flags=re.M)
+    text = re.sub(r"^(You say|You get|Why this works|Problema|Solución|Por qué funciona):", r"**\1:**", text, flags=re.M)
     # enabler mark spans -> plain glyph
     text = re.sub(r"\[([^\]]{1,3})\]\{\.en\d\}", r"\1", text)
     # figures -> wikilinks with caption
@@ -69,6 +88,9 @@ def main():
     for old in FIGS.glob(FIG_PREFIX + "*.png"):
         if old.name not in masters:
             old.unlink()
+    for pdf, name, _ in PDFS.values():
+        if pdf.exists():
+            shutil.copy2(pdf, FIGS / name)
     written = 0
     notes = {}
     for qmd in sorted(MASTER.glob("*.qmd")):
@@ -107,7 +129,11 @@ def main():
             "---\n\n"
             "> [!info] Read-only mirror of the PACO Manual master. Edit the Quarto source, then re-run `mirror_paco_manual.py`.\n\n"
         )
-        out.write_text(front + convert(body, notes))
+        text = convert(body, notes, "es" if stem.endswith(".es") else "en")
+        if stem in PDFS and (FIGS / PDFS[stem][1]).exists():
+            _, name, section = PDFS[stem]
+            text = text.rstrip("\n") + f"\n\n{section}\n\n![[{name}]]\n"
+        out.write_text(front + text)
         written += 1
     # remove stale mirror notes whose source disappeared
     keep = set(notes.values())
@@ -123,7 +149,7 @@ def main():
                      f"tags:\n  - type/reference\n  - lang/{lang}\n  - context/paco\n  - topic/ai\n"
                      f'source: "~/mylab/paco-manual/design/{src}"\n' "mirror: true\n---\n\n"
                      "> [!info] Read-only mirror of the design briefs kept in the manual repository (`design/`). Edit the source, then re-run `mirror_paco_manual.py`.\n\n")
-            (DESIGN_MIRROR / name).write_text(front + convert((design / src).read_text(), notes))
+            (DESIGN_MIRROR / name).write_text(front + convert((design / src).read_text(), notes, lang))
     print(f"mirrored {written} chapters into {MIRROR}")
 
 
