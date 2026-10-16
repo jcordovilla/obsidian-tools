@@ -166,7 +166,7 @@ class MarkdownToDocxExporter:
                  keep_heading_numbers=False, fit_tables=False, table_font_size=None,
                  landscape_min_cols=8, landscape_min_chars=250, page_size=None,
                  figure_captions=False, boxed_quotes=False, chapter_page_breaks=False, table_rules=False, keep_tables_whole=False, flow_tables='', annex_numbering=False,
-                 running_title=None, page_numbers=False, project_footer=None):
+                 running_title=None, page_numbers=False, project_footer=None, page_words='Page,of'):
         self.note_path = Path(note_path) if note_path else None
         self.template_path = Path(template_path)
         self.output_path = Path(output_path) if output_path else None
@@ -195,6 +195,7 @@ class MarkdownToDocxExporter:
         self.running_title = running_title
         self.page_numbers = page_numbers
         self.project_footer = project_footer
+        self.page_words = tuple(w.strip() for w in page_words.split(',', 1))
         self._title_rendered = False  # tracks whether first H1 has been rendered
 
         self.style_map = dict(self.DEFAULT_STYLE_MAP)
@@ -835,7 +836,7 @@ class MarkdownToDocxExporter:
             print(f'  Annex page numbering: {", ".join(labs) or "no annex heading found"}')
 
         if self.running_title is not None or self.page_numbers:
-            set_running_header(self.doc, self.running_title or '', self.page_numbers)
+            set_running_header(self.doc, self.running_title or '', self.page_numbers, page_words=self.page_words)
         if self.project_footer:
             left1, _, left2 = self.project_footer.partition('|')
             set_project_footer(self.doc, left1.strip(), left2.strip())
@@ -980,6 +981,8 @@ Examples:
                         help='Text for the page header (replaces the template placeholder; pass "" to clear)')
     parser.add_argument('--page-numbers', action='store_true',
                         help='Put a centred "Page X of Y" in the footer')
+    parser.add_argument('--page-words', type=str, default='Page,of',
+                        help='Words for the page-number footer as "WORD,OF" (default "Page,of"; Spanish "Página,de")')
     parser.add_argument('--project-footer', type=str,
                         help='Two-line project footer "LINE1|LINE2": line 1 left text with the document name '
                              '(FILENAME field) flush right; line 2 left text with "Page X of Y" flush right '
@@ -1055,6 +1058,7 @@ Examples:
         running_title=args.running_title,
         page_numbers=args.page_numbers,
         project_footer=args.project_footer,
+        page_words=args.page_words,
     )
     return exporter.run()
 

@@ -197,6 +197,24 @@ def _sectPr_usable_twips(sectPr):
     return w - l - r
 
 
+# schema order of the children of w:sectPr; Word reports a file with them out of order as unreadable
+_SECTPR_ORDER = ['headerReference', 'footerReference', 'footnotePr', 'endnotePr', 'type', 'pgSz', 'pgMar',
+                 'paperSrc', 'pgBorders', 'lnNumType', 'pgNumType', 'cols', 'formProt', 'vAlign', 'noEndnote',
+                 'titlePg', 'textDirection', 'bidi', 'rtlGutter', 'docGrid', 'printerSettings', 'sectPrChange']
+
+
+def _sectPr_add(sectPr, el):
+    """Insert a new child of w:sectPr at its schema position (before the first child that must follow it)."""
+    rank = _SECTPR_ORDER.index(el.tag.split('}')[-1])
+    for child in sectPr:
+        name = child.tag.split('}')[-1] if isinstance(child.tag, str) else ''
+        if name in _SECTPR_ORDER and _SECTPR_ORDER.index(name) > rank:
+            child.addprevious(el)
+            return el
+    sectPr.append(el)
+    return el
+
+
 def _make_sectPr(base_sectPr, landscape):
     """Copy a sectPr, force a next-page break and the requested orientation."""
     sp = _copy.deepcopy(base_sectPr)
@@ -211,7 +229,7 @@ def _make_sectPr(base_sectPr, landscape):
         del pgSz.attrib[qn('w:orient')]
     typ = sp.find(qn('w:type'))
     if typ is None:
-        typ = OxmlElement('w:type'); sp.insert(0, typ)
+        typ = _sectPr_add(sp, OxmlElement('w:type'))
     typ.set(qn('w:val'), 'nextPage')
     # page numbering continues across the inserted sections
     pg = sp.find(qn('w:pgNumType'))
@@ -262,10 +280,13 @@ def _p_text(p_el):
 
 
 def _is_caption(p_el, max_chars=300):
-    """A short paragraph whose text runs are all bold: the usual table title."""
+    """A short paragraph whose text runs are all bold, or that opens with a numbered table label
+    ("Table 1.", "Tabla 1.", "Cuadro 1.", "Tableau 1."): the usual table title."""
     text = _p_text(p_el).strip()
     if not text or len(text) > max_chars:
         return False
+    if re.match(r'(Table|Tabla|Cuadro|Tableau)\s+[A-Z]?\d+[.:]', text):
+        return True
     runs = [r for r in p_el.iter(qn('w:r')) if ''.join(t.text or '' for t in r.iter(qn('w:t'))).strip()]
     if not runs:
         return False
@@ -519,11 +540,8 @@ def fit_tables_to_content(doc, font_size_pt=None, landscape_min_cols=8, landscap
         # keep the paragraph before the table with it
         prev = t._tbl.getprevious()
         if prev is not None and prev.tag == qn('w:p'):
-            pPr = prev.find(qn('w:pPr'))
-            if pPr is None:
-                pPr = OxmlElement('w:pPr'); prev.insert(0, pPr)
-            if pPr.find(qn('w:keepNext')) is None:
-                pPr.append(OxmlElement('w:keepNext'))
+            # get_or_add keeps the schema order (keepNext before numPr, spacing, jc)
+            prev.get_or_add_pPr().get_or_add_keepNext()
         report.append((ncols, len(t.rows), 'landscape' if wide else 'portrait', [round(w / _TWIPS_PER_CM, 1) for w in widths]))
     if any(r[2] == 'landscape' for r in report):
         # the document's closing section must not restart page numbering or reapply a first-page variant
@@ -545,12 +563,12 @@ def set_page_size(doc, size='A4', margins_cm=(2.5, 2.5, 2.2, 2.2)):
     for sectPr in doc.element.body.iter(qn('w:sectPr')):
         pgSz = sectPr.find(qn('w:pgSz'))
         if pgSz is None:
-            pgSz = OxmlElement('w:pgSz'); sectPr.insert(0, pgSz)
+            pgSz = _sectPr_add(sectPr, OxmlElement('w:pgSz'))
         land = pgSz.get(qn('w:orient')) == 'landscape'
         pgSz.set(qn('w:w'), str(h if land else w)); pgSz.set(qn('w:h'), str(w if land else h))
         pgMar = sectPr.find(qn('w:pgMar'))
         if pgMar is None:
-            pgMar = OxmlElement('w:pgMar'); sectPr.append(pgMar)
+            pgMar = _sectPr_add(sectPr, OxmlElement('w:pgMar'))
         pgMar.set(qn('w:top'), str(top)); pgMar.set(qn('w:bottom'), str(bottom))
         pgMar.set(qn('w:left'), str(left)); pgMar.set(qn('w:right'), str(right))
         for k in ('header', 'footer'):
@@ -558,9 +576,11 @@ def set_page_size(doc, size='A4', margins_cm=(2.5, 2.5, 2.2, 2.2)):
         if pgMar.get(qn('w:gutter')) is None: pgMar.set(qn('w:gutter'), '0')
 
 
-def set_running_header(doc, text=None, page_numbers=False, font_size_pt=8):
-    """Replace every header's text with `text` (or clear it) and, if asked, put a
-    centred "Page X of Y" field in every footer. Covers first-page and even-page parts."""
+def set_running_header(doc, text=None, page_numbers=False, font_size_pt=8, page_words=('Page', 'of')):
+    """Replace every header's text with `text` (or clear it) and, if asked, replace every footer with a
+    centred "Page X of Y" field ("Página X de Y" with page_words=('Página', 'de')). Covers first-page
+    and even-page parts. The footer is cleared of everything, template fields included (a FILENAME
+    field left in place prints glued to the page number)."""
     def _field(paragraph, instr):
         r = paragraph.add_run()
         b = OxmlElement('w:fldChar'); b.set(qn('w:fldCharType'), 'begin'); r._r.append(b)
@@ -580,11 +600,14 @@ def set_running_header(doc, text=None, page_numbers=False, font_size_pt=8):
             for part in (section.footer, section.first_page_footer, section.even_page_footer):
                 for p in list(part.paragraphs)[1:]:
                     p._p.getparent().remove(p._p)
+                for tbl in list(part._element.findall(qn('w:tbl'))):
+                    part._element.remove(tbl)
                 p = part.paragraphs[0] if part.paragraphs else part.add_paragraph()
-                for r in list(p.runs): r._r.getparent().remove(r._r)
-                run = p.add_run('Page '); run.font.size = Pt(font_size_pt)
+                for child in list(p._p):
+                    if child.tag != qn('w:pPr'): p._p.remove(child)
+                run = p.add_run(page_words[0] + ' '); run.font.size = Pt(font_size_pt)
                 _field(p, ' PAGE ')
-                run = p.add_run(' of '); run.font.size = Pt(font_size_pt)
+                run = p.add_run(' ' + page_words[1] + ' '); run.font.size = Pt(font_size_pt)
                 _field(p, ' NUMPAGES ')
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
@@ -696,9 +719,7 @@ def annex_page_numbering(doc, pattern=r'^(Annex [A-Z])\b', separator=' - '):
         for i, typ in enumerate(('default', 'even', 'first')):
             ref = OxmlElement('w:footerReference'); ref.set(qn('w:type'), typ); ref.set(qn('r:id'), rids[zone]); sp.insert(i, ref)
         if pg is None:
-            pg = OxmlElement('w:pgNumType')
-            anchor = sp.find(qn('w:pgMar'))
-            (anchor.addnext(pg) if anchor is not None else sp.append(pg))
+            pg = _sectPr_add(sp, OxmlElement('w:pgNumType'))
         if zone not in started:
             pg.set(qn('w:start'), '1'); started.add(zone)
         elif qn('w:start') in pg.attrib:
