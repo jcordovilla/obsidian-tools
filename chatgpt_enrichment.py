@@ -1267,6 +1267,30 @@ def _slug(text: str, max_len: int = 80) -> str:
     return s
 
 
+_TITLE_CONNECTIVES = (r"(?:a|an|the|of|to|in|for|and|or|with|by|on|at|from|as|that|which|is|are|"
+                      r"de|la|el|los|las|del|para|por|y|o|en|un|una|que|con|al|se|es|son)")
+
+
+def _claim_title(text: str, limit: int = 200) -> str:
+    """Heading for a claim: the whole statement when it fits, otherwise a cut at a clause
+    boundary that never ends on a connective word or a bare number."""
+    stmt = re.sub(r"\s+", " ", text).strip()
+    if len(stmt) <= limit:
+        return stmt.rstrip(".")
+    cut = stmt[:limit]
+    for sep in ("; ", ": ", ", ", " (", " - "):
+        i = cut.rfind(sep)
+        if i >= 60:
+            cut = cut[:i]
+            break
+    else:
+        cut = cut.rsplit(" ", 1)[0]
+    cut = cut.rstrip(" ,;:")
+    while re.search(r"\s" + _TITLE_CONNECTIVES + r"$|\s\d+$", cut, re.I):
+        cut = cut.rsplit(" ", 1)[0].rstrip(" ,;:")
+    return cut
+
+
 def _frontmatter_block(artefact_type: str, source_title: str, source_path: str,
                        topics: List[str], extra: Dict = None) -> str:
     """Standard frontmatter for distilled artefacts."""
@@ -1285,6 +1309,11 @@ def _frontmatter_block(artefact_type: str, source_title: str, source_path: str,
     lines.extend([
         f"source_conversation: \"[[{Path(source_path).stem}]]\"",
         f"distilled_from_score: {extra.get('score') if extra else 'null'}",
+    ])
+    if extra and extra.get('title'):
+        t = extra['title'].replace('\\', '\\\\').replace('"', '\\"')
+        lines.append(f'title: "{t}"')
+    lines.extend([
         "---",
         "",
     ])
@@ -1399,8 +1428,11 @@ def _write_claim_note(vault: Path, entry: Dict, cl: Dict) -> Optional[Path]:
     target_dir = target_dir / 'Claims'
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    # Claim filenames: first N words of text
+    # Claim filenames: first N words of text (kept short for the file system);
+    # the heading and the title field carry the whole statement (Phase 0 of the
+    # insight review, 2026-10-18: ten-word headings cut every claim mid-sentence).
     slug_source = ' '.join(text.split()[:10])
+    title = _claim_title(text)
     filename = f"{_slug(slug_source, max_len=80)}.md"
     path = target_dir / filename
     if path.exists():
@@ -1409,11 +1441,11 @@ def _write_claim_note(vault: Path, entry: Dict, cl: Dict) -> Optional[Path]:
     fm = _frontmatter_block(
         'claim', entry['title'], entry['conv_id'],
         entry.get('primary_topics', []),
-        extra={'score': entry.get('score')}
+        extra={'score': entry.get('score'), 'title': title}
     )
 
     body = [
-        f"# {slug_source[:80]}",
+        f"# {title}",
         "",
         "## Claim",
         "",
