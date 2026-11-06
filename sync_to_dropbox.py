@@ -269,7 +269,14 @@ class VaultSync:
         modified_files = []
 
         for rel_path in sorted(source_files.keys()):
-            action, bytes_copied = self.sync_file(rel_path, source_files, backup_files)
+            # A file can vanish between the scan and the copy (temporary files,
+            # e.g. compress_images.py previews, or a note renamed meanwhile).
+            # Skip it; the next run sees the vault as it then is. (2026-11-06)
+            try:
+                action, bytes_copied = self.sync_file(rel_path, source_files, backup_files)
+            except FileNotFoundError:
+                print(f"  Skipped (vanished during the run): {rel_path}")
+                continue
 
             if action == 'new':
                 self.stats.files_new += 1
